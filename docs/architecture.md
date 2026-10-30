@@ -24,8 +24,8 @@ flowchart TD
 
     subgraph Protocol_Layer ["Protocol Transport Abstraction (DeviceTransport)"]
         MTPTrans["MTPTransport\n(libmtp / libusb / USB Bulk IO)"]
-        ADBTrans["ADBTransport (USB)\n(ADB Sync Protocol / Socket)"]
-        WirelessADB["WirelessADBTransport (Wi-Fi)\n(TLS / mDNS / ADB Sync Protocol)"]
+        ADBTrans["ADBTransport (USB) ✅\n(adb CLI via ProcessADBCommandRunner)"]
+        WirelessADB["WirelessADBTransport (Wi-Fi) 🔜\n(TLS / mDNS — Milestone 2.1)"]
     end
 
     subgraph Hardware_Target ["Connected Android Hardware"]
@@ -74,17 +74,29 @@ flowchart TD
   - Implements on-demand item materialization and pagination.
 
 ### 2.3 Core Engine & State Management
-- **`DeviceRegistry` (Actor):**
-  - Monitors USB hotplug events via IOKit (`IOServiceAddMatchingNotification` for USB Device classes `0x06` Image/PTP/MTP and `0xFF` Vendor Specific/ADB).
-  - Listens on local network for mDNS services (`_adb-tls-connect._tcp` and `_adb-tls-pairing._tcp`).
-  - Maintains connected device lifecycle (Connected, Authenticating, Ready, Disconnected).
-- **`TransferQueue` (Actor):**
+
+#### Milestone 1 — Implemented ✅
+
+- **`ConnectionManager` (Actor):**
+  - Dependency-injection root for the transport layer.
+  - Accepts an optional `ADBCommandRunner` for testability (production: `ProcessADBCommandRunner`; tests: `MockADBCommandRunner`).
+  - Dispatches to `ADBDeviceTransport` for `.usbADB` devices and `MockDeviceTransport` for mock devices.
+  - Maintains per-device transport instances and active connection state.
+- **`TransferQueueService` (Actor):**
   - Manages active, queued, paused, completed, and failed transfer jobs.
-  - Controls concurrency limits (e.g., MTP transport allows exactly 1 active I/O operation per device; ADB transport allows concurrent multiplexed streams).
-  - Implements token-bucket rate limiting (optional) and real-time moving-average speed calculation.
-- **`VFSRouter`:**
-  - Standardizes cross-platform path differences (POSIX forward slash `/` vs MTP Object IDs).
-  - In-memory metadata and directory cache with configurable TTL (Time-To-Live) to prevent redundant MTP enumerations.
+  - Enforces concurrency limit (1 active transfer per device by default).
+  - Reports real-time `TransferProgress` (bytes transferred, total size, speed, ETA).
+  - State machine: `.queued` → `.inProgress` → `.completed` / `.failed` / `.cancelled`.
+- **`DeviceDiscoveryService` (Protocol):**
+  - `MockDeviceDiscoveryService` — emits pre-seeded Android device descriptors for UI/unit testing.
+  - `ADBDeviceDiscoveryService` — calls `adb devices -l` and parses the output.
+  - `CompositeDeviceDiscoveryService` — aggregates both; results are tagged by source.
+
+#### Planned — Future Milestones
+
+- **`DeviceRegistry` (IOKit/mDNS):** USB hotplug via `IOServiceAddMatchingNotification`; mDNS for wireless ADB. Planned for Milestone 3.
+- **`VFSRouter`:** Cross-protocol path normalization and metadata cache with TTL. Planned for Milestone 4.
+- **`MenuBarController`:** Lightweight AppKit menu-bar agent. Planned for Milestone 5.
 
 ---
 
@@ -114,18 +126,66 @@ public protocol DeviceTransport: AnyObject, Sendable {
 - Enforces strict mutual exclusion via Swift Actor isolation because MTP protocol transactions are non-reentrant.
 - Triggers `android.hardware.action.MEDIA_SCANNER_SCAN_FILE` or MTP sendObjectComplete so media shows up immediately in Android apps.
 
-### 3.2 ADB Transport (`ADBTransport`)
-- Connects to ADB server daemon on local loopback TCP port.
-- Negotiates `transport:<serial>` to lock communication to the specific Android target.
-- Uses the `SYNC` service stream:
-  - `SEND`: Sends file data in 64 KB chunks followed by `DONE` with file timestamp.
-  - `RECV`: Pulls file data stream until `DONE` packet is received.
-  - `LIST`: Efficiently streams directory entries in binary format (`DENT` packets).
+### 3.2 ADB Transport — Milestone 2 Implementation ✅
 
-### 3.3 Wireless ADB Transport (`WirelessADBTransport`)
-- Implements pairing handshake via TLS (Android 11+ pairing server).
-- Authenticates with host RSA key stored in the macOS Keychain.
-- Operates over Wi-Fi TCP socket directly into the ADB server or embedded transport.
+> **Implemented:** The Milestone 2 ADB transport drives the official `adb` command-line binary via a safe Swift `Foundation.Process` wrapper. The earlier design note describing custom binary ADB SYNC framing has been superseded by this approach, which is simpler, fully supported, and leverages Google's official Platform Tools binary.
+
+#### Component Map
+
+| Component | File | Responsibility |
+|---|---|---|
+| `ADBCommandRunner` | `ADB/ADBCommandRunner.swift` | Protocol abstraction for `adb` invocation; enables dependency injection |
+| `ProcessADBCommandRunner` | `ADB/ProcessADBCommandRunner.swift` | Production implementation using `Foundation.Process`; argument arrays only |
+| `MockADBCommandRunner` | `Mock/MockADBCommandRunner.swift` | Deterministic test double; seeded responses for all command surfaces |
+| `ADBConfiguration` | `ADB/ADBConfiguration.swift` | Multi-path `adb` binary resolution (PATH, Homebrew, Android SDK) |
+| `ADBDeviceDiscoveryService` | `ADB/ADBDeviceDiscoveryService.swift` | Parses `adb devices -l` output; `DeviceDiscoveryService` conformance |
+| `ADBFileSystem` | `ADB/ADBFileSystem.swift` | `DeviceFileSystem` via `adb shell ls / mkdir / rm / mv` |
+| `ADBTransferService` | `ADB/ADBTransferService.swift` | `TransferService` via `adb push` / `adb pull` with post-transfer verification |
+| `ADBDeviceTransport` | `ADB/ADBDeviceTransport.swift` | `DeviceTransport` conformance; `Synchronization.Mutex<T>` for thread safety |
+| `CompositeDeviceDiscoveryService` | `ADB/CompositeDeviceDiscoveryService.swift` | Aggregates ADB + Mock discovery services |
+
+#### Design Decisions
+
+- **Argument arrays only.** Every `adb` invocation is built as `[String]` argument arrays. Shell-string interpolation is never used. Filenames and paths containing spaces, Unicode, or special characters are passed safely.
+- **`-s <serial>` for every command.** All filesystem and transfer commands explicitly specify the target device serial. Multiple connected devices are fully supported without ambiguity.
+- **Transfers via `adb push` / `adb pull`.** These subcommands are the documented, stable, and streaming-capable transfer mechanism from Android Platform Tools. They do not load file contents into memory.
+- **Filesystem operations via `adb shell`.** `ls -la`, `mkdir -p`, `rm -rf`, and `mv` are issued as `adb shell` commands. `parseLsOutput()` is a pure static function that handles Unicode filenames and spaces.
+- **Post-transfer verification.** After every `adb push`, `ADBTransferService` runs `adb shell ls -ld <remotePath>` to confirm the file was written. After `adb pull`, the local `URL.checkResourceIsReachable()` is checked. A transfer is never marked successful unless both the command and the verification pass.
+- **Timeout enforcement.** `ProcessADBCommandRunner` enforces a configurable deadline (default 30 s) on every `adb` invocation. On timeout, `process.terminate()` is called and `.timeout` is thrown.
+- **Cancellation.** `ProcessADBCommandRunner.cancel()` calls `process.terminate()`. All callers check `Task.isCancelled` before and after each command.
+- **Device authorization.** `ADBDeviceTransport.connect()` calls `adb devices -l` and checks the device status field. If the field is `unauthorized`, `.authorizationRequired` is thrown and the user is shown the authorization prompt. The Android authorization dialog is never bypassed.
+- **ADB availability.** `ADBConfiguration.findADBExecutable()` searches PATH, `/usr/local/bin`, `/opt/homebrew/bin`, and `~/Library/Android/sdk/platform-tools/`. If none is found, `startDiscovery()` throws `.ioError("ADB is not available")` — no crash, no silent fallback.
+- **Thread safety.** `ADBDeviceTransport` state is guarded by `Synchronization.Mutex<ADBTransportState>` (requires macOS 15.0+). `NSLock` is not used in async contexts.
+
+#### Device Status Parsing (`adb devices -l`)
+
+`parseDevicesOutput()` is a pure static function (no side effects, fully testable) that handles:
+
+| adb status string | DroidBridge mapping |
+|---|---|
+| `device` | `.authorized` / Ready |
+| `unauthorized` | `.unauthorized` |
+| `offline` | `.offline` |
+| `no permissions` | `.noPermissions` |
+| IP:PORT serial format | Wi-Fi ADB (parsed correctly) |
+
+#### Error Mapping
+
+| ADB stderr / exit code | DroidBridge error |
+|---|---|
+| `error: device 'X' not found` | `.deviceDisconnected` |
+| `Permission denied` | `.permissionDenied` |
+| `No space left on device` | `.storageFull` |
+| `No such file or directory` | `.notFound` |
+| Non-zero exit, timeout | `.commandFailed` / `.timeout` |
+
+### 3.3 Wireless ADB Transport (`WirelessADBTransport`) — Planned (Milestone 2.1)
+
+> **Not yet implemented.** The wireless pairing handshake (Android 11+ TLS pairing, `_adb-tls-pairing._tcp` mDNS) is planned for Milestone 2.1. The `ConnectionType.wirelessADB` enum case and Wi-Fi serial detection (`IP:PORT` format in `adb devices -l`) are already present in the codebase.
+
+- Will implement pairing handshake via TLS (Android 11+ pairing server).
+- Will authenticate with host RSA key stored in the macOS Keychain.
+- Will operate over Wi-Fi TCP into the ADB daemon.
 
 ---
 
@@ -157,3 +217,25 @@ DroidBridge adheres to macOS App Sandbox guidelines:
   - `com.apple.security.application-groups` — Shared App Group for IPC between main app, FinderSync, and FileProvider extensions.
 - **Keychain Storage:**
   - Host RSA private keys (`adbkey`) are stored securely in macOS Keychain Services with access controls restricted to DroidBridge.
+
+
+---
+
+## 6. Milestone Implementation Status
+
+| Milestone | Status | Notes |
+|---|---|---|
+| **M0:** Workspace Discovery & Documentation | ✅ Complete | All docs, directory structure, clean-room policy established |
+| **M1:** Mock Harness & Core Interfaces | ✅ Complete | 6 protocols, MockDeviceTransport, TransferQueueService, 50/50 tests |
+| **M2:** ADB USB Connectivity | ✅ Complete | ProcessADBCommandRunner, 9 ADB components, 103/103 tests (50 M1 regression + 53 M2 new) |
+| **M2.1:** Hardware Browsing Fix & File Transfer UI | ✅ Complete | `-L` symlink dereferencing, Upload/Download UI in ContentView, 138/138 tests |
+| **M2.2:** Wireless ADB (Wi-Fi TLS Pairing) | 🔜 Planned | `wirelessADB` enum case present; mDNS + TLS pairing not yet implemented |
+| **M3:** MTP USB Protocol | 🔜 Planned | `usbMTP` enum case present; libmtp/libusb integration not started |
+| **M4:** Transfer Queue Enhancements | 🔜 Planned | Priority reordering, pause/resume, speed curves |
+| **M5:** macOS Finder Integration | 🔜 Planned | FileProvider + FinderSync extensions |
+
+### M2 Physical Hardware Status
+
+> ⚠️ **No physical Android device was attached** during Milestone 2 development. All 103 tests use `MockADBCommandRunner` for deterministic, reproducible results. Physical-device smoke tests (USB debugging authorization, push/pull round-trip, disconnect-during-transfer) are documented as **acceptance criteria for the next hardware-available session**.
+>
+> To run with a real device: install Android Platform Tools (`brew install --cask android-platform-tools`), connect a device with USB Debugging enabled, authorize the host on the device, then launch `DroidBridgeApp`.

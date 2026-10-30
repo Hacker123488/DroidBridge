@@ -1,62 +1,6 @@
 import SwiftUI
-import Observation
+import AppKit
 import DroidBridgeCore
-
-@Observable
-@MainActor
-public final class AppViewModel {
-    public var devices: [DeviceDescriptor] = []
-    public var selectedDevice: DeviceDescriptor?
-    public var storageItems: [StorageItem] = []
-    public var currentPath: String = "/sdcard"
-    public var statusMessage: String = "Ready"
-    public var isDevMockEnabled: Bool = true
-    public var activeTransport: (any DeviceTransport)?
-    
-    public init() {}
-    
-    public func loadDevices() async {
-        let discovery = MockDeviceDiscoveryService(enableSimulatedDevices: isDevMockEnabled)
-        devices = await discovery.availableDevices()
-        if selectedDevice == nil, let first = devices.first {
-            selectedDevice = first
-            await connectToDevice(first)
-        }
-    }
-    
-    public func connectToDevice(_ device: DeviceDescriptor) async {
-        statusMessage = "Connecting to \(device.name)..."
-        let mockTransport = MockDeviceTransport(
-            deviceID: device.id,
-            deviceName: device.name,
-            model: device.model
-        )
-        do {
-            try await mockTransport.connect()
-            self.activeTransport = mockTransport
-            self.statusMessage = "Connected (\(device.name))"
-            await navigateTo("/sdcard")
-        } catch {
-            self.statusMessage = "Connection failed: \(error.localizedDescription)"
-        }
-    }
-    
-    public func navigateTo(_ path: String) async {
-        guard let transport = activeTransport else { return }
-        do {
-            storageItems = try await transport.fileSystem.listDirectory(at: path)
-            currentPath = path
-        } catch {
-            statusMessage = "Error opening \(path): \(error.localizedDescription)"
-        }
-    }
-    
-    public func navigateUp() async {
-        let parent = (currentPath as NSString).deletingLastPathComponent
-        let target = parent.isEmpty ? "/" : parent
-        await navigateTo(target)
-    }
-}
 
 public struct ContentView: View {
     var viewModel = AppViewModel()
@@ -122,10 +66,36 @@ public struct ContentView: View {
                             Button("Up") {
                                 Task { await viewModel.navigateUp() }
                             }
+                            .disabled(viewModel.isTransferring)
                         }
+                        Button(action: {
+                            viewModel.promptAndUpload()
+                        }) {
+                            Label("Upload File...", systemImage: "arrow.up.circle.fill")
+                        }
+                        .disabled(viewModel.isTransferring || viewModel.activeTransport == nil)
                     }
                     .padding()
                     .background(Color(NSColor.controlBackgroundColor))
+                    
+                    if viewModel.isTransferring {
+                        VStack(spacing: 4) {
+                            HStack {
+                                Text(viewModel.transferStatusText)
+                                    .font(.caption)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                Button("Cancel") {
+                                    viewModel.cancelTransfer()
+                                }
+                                .font(.caption)
+                            }
+                            ProgressView(value: viewModel.transferProgressFraction)
+                        }
+                        .padding(.horizontal)
+                        .padding(.vertical, 6)
+                        .background(Color.accentColor.opacity(0.08))
+                    }
                     
                     List(viewModel.storageItems) { item in
                         HStack {
@@ -137,12 +107,31 @@ public struct ContentView: View {
                                 Text(ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file))
                                     .foregroundColor(.secondary)
                                     .font(.caption)
+                                
+                                Button(action: {
+                                    viewModel.promptAndDownload(item: item)
+                                }) {
+                                    Image(systemName: "arrow.down.circle")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(viewModel.isTransferring)
+                                .help("Download to Mac")
                             }
                         }
                         .contentShape(Rectangle())
                         .onTapGesture {
                             if item.isDirectory {
                                 Task { await viewModel.navigateTo(item.path) }
+                            }
+                        }
+                        .contextMenu {
+                            if !item.isDirectory {
+                                Button {
+                                    viewModel.promptAndDownload(item: item)
+                                } label: {
+                                    Label("Download to Mac...", systemImage: "arrow.down.circle")
+                                }
+                                .disabled(viewModel.isTransferring)
                             }
                         }
                     }
@@ -165,7 +154,7 @@ public struct ContentView: View {
                 HStack {
                     Text("Status: \(viewModel.statusMessage)")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(viewModel.lastError != nil ? .red : .secondary)
                     Spacer()
                 }
                 .padding(8)

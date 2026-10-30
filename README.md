@@ -11,9 +11,9 @@ DroidBridge is engineered as a free, open, and robust alternative to commercial 
 ## Key Capabilities
 
 - **Tri-Mode Connectivity:**
-  - **USB MTP (Media Transfer Protocol):** Hassle-free plug-and-play browsing of shared storage without enabling Developer Options.
-  - **USB ADB (Android Debug Bridge):** High-speed socket streaming over USB with access to granular filesystem attributes and app storage.
-  - **Authorized Wireless ADB (Wi-Fi):** Cable-free pairing and two-way transfers via Android 11+ mDNS discovery and TLS pairing.
+  - **USB ADB (Android Debug Bridge) ✅ Implemented (M2):** `adb` CLI binary transport via safe `Foundation.Process` wrapper. Argument-array invocation only. Supports device discovery, authorization status, file listing, upload, download, directory creation, delete, and rename.
+  - **Authorized Wireless ADB (Wi-Fi) 🔜 Planned (M2.1):** Cable-free pairing and two-way transfers via Android 11+ mDNS discovery and TLS pairing.
+  - **USB MTP (Media Transfer Protocol) 🔜 Planned (M3):** Hassle-free plug-and-play browsing of shared storage without enabling Developer Options.
 - **Two-Way File & Directory Transfers:** Complete bidirectional read and write operations for files of any size (including full support for >4 GB files).
 - **macOS System & Finder Integration:**
   - Native **FileProvider** extension (`NSFileProviderReplicatedExtension`) allowing Android storage to mount as a drive in Finder.
@@ -41,17 +41,25 @@ File_Transfer/
 ├── evidence/                    # Benchmark traces, protocol captures & test logs
 ├── notes/                       # Developer notes and architectural decision records (ADRs)
 ├── src/                         # Swift source code
-│   ├── DroidBridgeCore/         # Models, protocols, services, and mock provider
+│   ├── DroidBridgeCore/         # Models, protocols, services, and providers
 │   │   ├── Models/              # Domain models (StorageItem, DeviceDescriptor, etc.)
 │   │   ├── Protocols/           # DeviceTransport, TransferService, DeviceFileSystem
 │   │   ├── Services/            # TransferQueueService, ConnectionManager
-│   │   └── Mock/                # MockDeviceTransport, MockDeviceDiscoveryService
+│   │   ├── ADB/                 # ✅ M2: ADB CLI transport implementation
+│   │   │   ├── ADBConfiguration.swift           # adb binary path resolution
+│   │   │   ├── ADBCommandRunner.swift           # Protocol abstraction for adb invocation
+│   │   │   ├── ProcessADBCommandRunner.swift    # Production Foundation.Process runner
+│   │   │   ├── ADBDeviceDiscoveryService.swift  # Parses adb devices -l
+│   │   │   ├── ADBDeviceTransport.swift         # DeviceTransport conformance
+│   │   │   ├── ADBFileSystem.swift              # DeviceFileSystem via adb shell
+│   │   │   ├── ADBTransferService.swift         # TransferService via adb push/pull
+│   │   │   └── CompositeDeviceDiscoveryService.swift
+│   │   └── Mock/                # MockDeviceTransport, MockADBCommandRunner (test doubles)
 │   └── DroidBridgeApp/          # Native SwiftUI desktop application
 │       └── App/                 # DroidBridgeApp entry point and ContentView
 ├── tests/                       # Unit and integration test suites
-│   ├── DroidBridgeTests/        # XCTest test cases
-│   └── DroidBridgeTestRunner/   # Standalone executable test runner
-├── Package.swift                # Swift Package Manager manifest
+│   └── DroidBridgeTestRunner/   # Standalone executable test runner (103 assertions)
+├── Package.swift                # Swift Package Manager manifest (macOS 15.0+, Swift 6)
 └── README.md                    # Project overview and roadmap
 ```
 
@@ -62,6 +70,15 @@ File_Transfer/
 ### System Prerequisites
 - macOS 15.0 or later (tested on macOS 27.2 Apple Silicon arm64).
 - Swift 6.0+ toolchain (Apple Swift 6.4 via Xcode Command Line Tools).
+- **For ADB connectivity:** Android Platform Tools containing the `adb` binary.
+  ```bash
+  # Install via Homebrew (recommended)
+  brew install --cask android-platform-tools
+
+  # Or install Android Studio and add to PATH:
+  # export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH"
+  ```
+  DroidBridge searches for `adb` in PATH, `/usr/local/bin`, `/opt/homebrew/bin`, and `~/Library/Android/sdk/platform-tools/` automatically. If none is found, ADB device discovery reports a clear error; mock/simulated devices remain available.
 
 ### Build Commands
 
@@ -69,7 +86,7 @@ File_Transfer/
 # Build all targets (DroidBridgeCore, DroidBridgeApp, DroidBridgeTestRunner)
 swift build --disable-sandbox --scratch-path /tmp/droidbridge-build -Xbuild-tools-swiftc -module-cache-path -Xbuild-tools-swiftc /tmp/clang-cache -Xswiftc -module-cache-path -Xswiftc /tmp/clang-cache
 
-# Run the automated test suite (50 assertions across 9 test suites)
+# Run the automated test suite (138 assertions across 17 test suites)
 swift run --disable-sandbox --scratch-path /tmp/droidbridge-build -Xbuild-tools-swiftc -module-cache-path -Xbuild-tools-swiftc /tmp/clang-cache -Xswiftc -module-cache-path -Xswiftc /tmp/clang-cache DroidBridgeTestRunner
 
 # Launch the SwiftUI macOS Application
@@ -145,8 +162,20 @@ For detailed architectural schematics, see [`docs/architecture.md`](file:///Volu
   - `TransferQueueService`: Actor-isolated job queue with state transitions and progress reporting.
   - `DroidBridgeApp`: Native SwiftUI application with simulated device explorer and Dev Mock toggle.
   - Automated test harness (`DroidBridgeTestRunner`): 50/50 assertions passing across 9 test suites.
-- [ ] **Milestone 2: ADB USB & Wireless Protocol Implementation**
-  - Socket streaming and ADB `SYNC` command handler (`STAT`, `LIST`, `SEND`, `RECV`).
+- [x] **Milestone 2: ADB USB Connectivity**
+  - Production `ProcessADBCommandRunner`: safe `Foundation.Process` wrapper; argument arrays only; timeout enforcement; cancellation.
+  - `ADBDeviceDiscoveryService`: parses `adb devices -l`; handles `authorized`, `unauthorized`, `offline`, multi-device, Wi-Fi (IP:PORT) serials.
+  - `ADBFileSystem`: `adb shell ls/mkdir/rm/mv`; Unicode/spaces handled; path traversal validation.
+  - `ADBTransferService`: `adb push` / `adb pull`; post-transfer verification; conflict resolution; error mapping.
+  - `ADBDeviceTransport`: `DeviceTransport` conformance; `Synchronization.Mutex<T>` thread safety; authorization check before connect.
+  - `CompositeDeviceDiscoveryService`: aggregates ADB + Mock discovery; real and simulated devices visually distinguished.
+  - `MockADBCommandRunner`: deterministic test double; all ADB command surfaces covered.
+- [x] **Milestone 2.1: Hardware Browsing Fix & File Transfer UI**
+  - Follow Android symbolic links (`ls -la -L -p` / `ls -ld -L -p`): `/sdcard` recognized as directory, `/sdcard/Download` contents listed cleanly.
+  - Implemented interactive transfer UI in `ContentView`: "Upload File..." toolbar button with `NSOpenPanel`, individual row Download button and right-click context menu with `NSSavePanel`, real-time transfer progress bar, cancellation, and error display.
+  - Fixed `ADBConfiguration` override: explicit `customADBPath` returns executable or `nil`, preventing silent fallback to PATH/Homebrew when an invalid custom path was configured.
+  - Automated test harness: **138/138 assertions passing** across 17 test suites (including symlink resolution, UI transfer integration, serial targeting, and error handling).
+  - ⚠️ Physical Android device (Realme RMX3092) manual end-to-end verification checklist prepared; automated tests use injected runner.
 - [ ] **Milestone 3: MTP USB Protocol Integration**
   - Integration with `libmtp` / USB bulk endpoints with strict actor-based concurrency.
 - [ ] **Milestone 4: Transfer Queue & Scheduler**

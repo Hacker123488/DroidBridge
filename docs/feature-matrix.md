@@ -6,16 +6,16 @@ This document benchmarks **DroidBridge**'s target functional specifications agai
 
 ## 1. Comprehensive Feature Matrix
 
-| Feature / Capability | DroidBridge (Current / Milestone 1) | DroidBridge (Target) | MacDroid Pro | MacDroid Free | Google AFT (Legacy) | OpenMTP |
+| Feature / Capability | DroidBridge (Current / Milestone 2) | DroidBridge (Target) | MacDroid Pro | MacDroid Free | Google AFT (Legacy) | OpenMTP |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Licensing / Pricing** | Open / Free | Open / Free | Proprietary ($19.99/yr) | Free (Restricted) | Free (Discontinued) | Open Source (Free) |
 | **Technology Stack** | Swift 6 / SwiftUI / SPM | Swift 6 / SwiftUI / AppKit | Native Swift / Obj-C | Native Swift / Obj-C | Legacy Java/C++ | Electron / JS |
 | **Connection Modes** | | | | | | |
-| • Simulated Mock Device | ✅ Verified (Milestone 1) | ✅ Dev/Test Harness | ❌ Not Supported | ❌ Not Supported | ❌ Not Supported | ❌ Not Supported |
+| • Simulated Mock Device | ✅ Verified (M1 & M2) | ✅ Dev/Test Harness | ❌ Not Supported | ❌ Not Supported | ❌ Not Supported | ❌ Not Supported |
 | • USB MTP Mode | ⏳ Planned (Milestone 3) | ✅ Full Two-Way | ✅ Full Two-Way | ⚠️ Mac -> Android Disabled | ⚠️ Two-Way (Unstable) | ✅ Full Two-Way |
-| • USB ADB Mode | ⏳ Planned (Milestone 2) | ✅ Full Two-Way | ✅ Full Two-Way | ⚠️ Mac -> Android Disabled | ❌ Not Supported | ❌ Not Supported |
-| • Wireless ADB (Wi-Fi) | ⏳ Planned (Milestone 2) | ✅ Full Two-Way | ✅ Full Two-Way | ❌ Not Supported | ❌ Not Supported | ❌ Not Supported |
-| • Android 11+ Pairing (mDNS) | ⏳ Planned (Milestone 2) | ✅ Native Pairing | ✅ Supported | ❌ Not Supported | ❌ Not Supported | ❌ Not Supported |
+| • USB ADB Mode | ✅ Verified (Milestone 2) | ✅ Full Two-Way | ✅ Full Two-Way | ⚠️ Mac -> Android Disabled | ❌ Not Supported | ❌ Not Supported |
+| • Wireless ADB (Wi-Fi) | ⏳ Planned (Milestone 2.1) | ✅ Full Two-Way | ✅ Full Two-Way | ❌ Not Supported | ❌ Not Supported | ❌ Not Supported |
+| • Android 11+ Pairing (mDNS) | ⏳ Planned (Milestone 2.1) | ✅ Native Pairing | ✅ Supported | ❌ Not Supported | ❌ Not Supported | ❌ Not Supported |
 | **macOS System Integration** | | | | | | |
 | • Native Finder Drive Mount | ⏳ Planned (Milestone 5) | ✅ FileProvider | ✅ FileProvider | ❌ No Mount | ❌ No Mount | ❌ No Mount |
 | • FinderSync Sidebar & Badges | ⏳ Planned (Milestone 5) | ✅ Included | ✅ Included | ❌ No FinderSync | ❌ No FinderSync | ❌ No FinderSync |
@@ -23,61 +23,57 @@ This document benchmarks **DroidBridge**'s target functional specifications agai
 | • Drag-and-Drop to/from Finder | ⏳ Planned (Milestone 5) | ✅ Native | ✅ Native | ⚠️ Read-only to Finder | ⚠️ Flaky | ⚠️ Internal UI only |
 | • Quick Look File Previews | ⏳ Planned (Milestone 5) | ✅ Supported | ✅ Supported | ⚠️ Limited | ❌ Not Supported | ❌ Not Supported |
 | **File Transfer Engine** | | | | | | |
-| • Two-Way Bidirectional | ✅ Verified (Mock) | ✅ Full Read/Write | ✅ Full Read/Write | ❌ Read-Only (Mac <- Android) | ✅ Read/Write | ✅ Read/Write |
-| • Files > 4 GB Support | ⏳ Planned (Milestone 2/3) | ✅ 64-bit offsets | ✅ Supported | ⚠️ Read only | ❌ Fails on >4GB | ✅ Supported |
+| • Two-Way Bidirectional | ✅ Verified (Mock & ADB) | ✅ Full Read/Write | ✅ Full Read/Write | ❌ Read-Only (Mac <- Android) | ✅ Read/Write | ✅ Read/Write |
+| • Files > 4 GB Support | ⏳ Planned (Physical Lab) | ✅ 64-bit offsets | ✅ Supported | ⚠️ Read only | ❌ Fails on >4GB | ✅ Supported |
 | • Multi-file & Folder Queuing | ✅ Verified (Actor Queue) | ✅ Async Queue | ✅ Async Queue | ⚠️ Single thread | ❌ Basic copy | ✅ Queue supported |
 | • Transfer Pause / Resume | ✅ Verified (State Machine) | ✅ Supported | ✅ Supported | ❌ Not Supported | ❌ Not Supported | ❌ Not Supported |
 | • Speed & ETA Calculation | ✅ Verified (TransferProgress) | ✅ Real-time | ✅ Real-time | ⚠️ Basic | ❌ Not Supported | ✅ Basic |
 | • File Conflict Handling | ✅ Verified (Fail/Overwrite/Rename)| ✅ Prompt/Skip/Overwrite | ✅ Prompt/Overwrite | ❌ Read-only | ❌ Fails on collision | ✅ Overwrite prompt |
-| • Post-Transfer MediaScan | ⏳ Planned (Milestone 2/3) | ✅ Auto broadcast | ✅ Auto broadcast | ❌ Not Applicable | ⚠️ Hit-or-miss | ⚠️ Manual/Plugin |
+| • Post-Transfer MediaScan | ⏳ Planned (Milestone 3) | ✅ Auto broadcast | ✅ Auto broadcast | ❌ Not Applicable | ⚠️ Hit-or-miss | ⚠️ Manual/Plugin |
 | **Reliability & Performance** | | | | | | |
 | • Reconnection on Cable Pull | ✅ Verified (Fault Simulation)| ✅ Auto Recover/Abort | ✅ Graceful handling | ⚠️ Hangs | ❌ Crashes app | ⚠️ Requires restart |
-| • Multi-Device Concurrent | ✅ Verified (Device Isolation) | ✅ Supported | ✅ Supported | ❌ Single device | ❌ Single device | ❌ Single device |
+| • Multi-Device Concurrent | ✅ Verified (Device Isolation & -s)| ✅ Supported | ✅ Supported | ❌ Single device | ❌ Single device | ❌ Single device |
 | • Memory Footprint | ⚡ Low (<30 MB) | ⚡ Low (<80 MB) | ⚡ Low (<90 MB) | ⚡ Low (<90 MB) | ⚠️ Moderate | 🔴 High (>400 MB) |
 
 ---
 
 ## 2. Technical Feasibility & Classification
 
-To ensure rigorous product engineering, features are tagged according to their development classification:
-
-### 2.1 Confirmed Technical Primitives (Verified Feasible)
-- **USB Device Enumeration:** IOKit `IOServiceAddMatchingNotification` for USB Vendor ID/Product ID events.
-- **ADB Stream Protocol:** Local TCP socket communication with ADB daemon (`SYNC` commands: `STAT`, `LIST`, `SEND`, `DATA`, `DONE`). Proven in Android Open Source Project (AOSP) specification.
-- **MTP Communication:** `libmtp` / `libusb` user-space protocol implementation. No kernel drivers needed.
-- **FinderSync Integration:** Standard Apple API (`FIFinderSyncController`) for sidebar items and contextual menus.
-- **App Sandbox Entitlements:** `com.apple.security.device.usb` and `com.apple.security.network.client` allow sandboxed operation while maintaining USB and local network access.
+### 2.1 Confirmed Technical Primitives (Verified in Code)
+- **Safe Process ADB Invocation:** `ProcessADBCommandRunner` and `ADBCommandRunner` strictly using discrete argument arrays `[String]` without shell interpolation.
+- **Explicit Multi-Device Targeting:** Every command prepends `-s <serial>` ensuring zero race conditions when multiple Android devices are connected.
+- **Path Traversal Security:** Remote paths strictly sanitized, blocking `..` escapes.
+- **Unicode & Spaces Handling:** Verified handling of file names with whitespace and UTF-8 characters (`Unicode 测试 🚀.pdf`).
+- **Device State Parsing:** Cleanly distinguishes `device` (available), `unauthorized` (prompting user), `offline`, and missing devices.
 
 ### 2.2 Architectural Hypotheses (Under Prototyping)
-- **`NSFileProviderReplicatedExtension` for MTP:**
-  - *Premise:* Exposing Android storage as an Apple FileProvider item gives true Finder mounting without third-party kexts or macFUSE.
-  - *Risk:* MTP's half-duplex, single-threaded nature may cause Finder delays during burst file reads (e.g., QuickLook thumbnail generation).
-  - *Mitigation:* Implement an in-memory metadata cache and throttled request batching.
-- **Daemonless ADB:**
-  - *Premise:* Directly speaking ADB over USB endpoints in Swift without spawning a standalone `adb` binary.
-  - *Evaluation:* Bundling an isolated `adb` binary or running on a non-standard port (e.g. 5038) is currently far more robust across varying OEM Android fastboot/bootloader states.
+- **`NSFileProviderReplicatedExtension` for MTP/ADB:** Exposing storage as Apple FileProvider items for native Finder integration (Milestone 5).
+- **Daemonless ADB:** Direct USB endpoint communication without spawning external daemons (Milestone 4).
 
 ### 2.3 Known Unknowns & Platform Limitations
-- **Samsung OneUI MTP File Handle Locks:**
-  - Certain Samsung devices hold internal lock contention if the Samsung Gallery scanner is active while MTP writes occur.
-- **macOS Sleep/Wake Edge Cases:**
-  - Putting macOS to sleep during an active 10 GB transfer drops USB power states. The app must detect `NSWorkspace.willSleepNotification` and pause or cleanly abort active queue operations to avoid filesystem corruption on Android storage.
+- **Workstation ADB Availability:** On machines where Android SDK Platform Tools are not installed, DroidBridge requires user configuration or standard brew installation (`brew install --cask android-platform-tools`).
+- **Physical USB Testing Dependency:** Hardware E2E verification requires a physically connected, authorized Android device.
 
 ---
 
-## 3. Current Implementation Status (Milestone 1)
+## 3. Current Implementation Status (Milestones 1 & 2)
 
-- **Completed & Verified:**
-  - Abstract protocol definitions: `DeviceTransport`, `DeviceFileSystem`, `TransferService`, `TransferQueue`, `ConnectionManagerProtocol`, `DeviceDiscoveryService`.
-  - Core domain models: `ConnectionType`, `DeviceDescriptor`, `StorageItem`, `TransferJob`, `TransferProgress`, `TransferOptions`, `DeviceError`.
-  - `MockDeviceTransport`: In-memory and local temporary filesystem provider with seeded Android paths (`/sdcard`, `DCIM`, `Download`, `Music`, `Documents`).
-  - Security hardening: Path traversal validation strictly rejects `..` and non-canonical escapements.
-  - Conflict resolution: Comprehensive support for `.fail`, `.overwrite`, and `.renameWithTimestamp`.
-  - `TransferQueueService`: Actor-isolated job queue with state transitions (`pending`, `inProgress`, `paused`, `completed`, `cancelled`).
-  - `MockDeviceDiscoveryService`: Safe discovery implementation keeping mock devices completely hidden from production discovery unless explicitly requested.
-  - SwiftUI Application: `DroidBridgeApp` with `AppViewModel` supporting device selection, simulated directory navigation, and mock status toggling.
-  - Automated Test Suite: 50 assertions across 9 test suites passing with 100% success rate.
+- **Completed & Verified in Milestone 2:**
+  - `ADBConfiguration`: Multi-path resolution for official ADB binary (`PATH`, Homebrew, Android SDK).
+  - `ADBCommandRunner` & `ProcessADBCommandRunner`: Process isolation, piped I/O, cancellation hooks, and timeout safeguards.
+  - `ADBDeviceDiscoveryService`: Parsing of `adb devices -l` output into structured `DeviceDescriptor` models.
+  - `ADBDeviceTransport`: Implementation of `DeviceTransport` targeting physical ADB devices.
+  - `ADBFileSystem`: POSIX directory listing, metadata query, folder creation, deletion, and rename over ADB shell.
+  - `ADBTransferService`: Two-way streaming file uploads (`adb push`) and downloads (`adb pull`) with conflict resolution and integrity checks.
+  - `CompositeDeviceDiscoveryService`: Aggregated device discovery managing real ADB and simulated mock devices.
+  - `MockADBCommandRunner`: Deterministic mock ADB environment supporting 103/103 passing automated tests.
+- **Completed & Verified in Milestone 2.1:**
+  - `ADBFileSystem` Symlink Traversal: Appends `-L` flag to `ls -la` and `ls -ld`, allowing `/sdcard` (symlink to `/storage/self/primary`) and all subdirectories to be traversed as directories.
+  - Interactive Desktop Transfer UI: `ContentView` and `AppViewModel` wire up `ADBTransferService` to `NSOpenPanel` (Upload) and `NSSavePanel` (Download), with real-time progress fraction, cancellation, and visible error alerts.
+  - Configuration Override Fix: `ADBConfiguration` strictly honors `customADBPath` without falling back to PATH/Homebrew when an invalid custom path is provided.
+  - Test Suite Expansion: 138/138 automated test assertions passing across 17 test suites.
 - **Explicit Non-Claims:**
-  - Physical USB MTP communication is not yet implemented (scheduled for Milestone 3).
-  - Physical USB ADB and Wireless Wi-Fi ADB communication are not yet implemented (scheduled for Milestone 2).
+  - Physical USB MTP protocol communication is not yet implemented (scheduled for Milestone 3).
+  - Wireless pairing (mDNS TLS pairing) is not yet implemented (scheduled for Milestone 2.2).
+  - Unrestricted Android system root access is neither attempted nor claimed (scoped storage access).
   - macOS Finder FileProvider / FinderSync extension integration is not yet implemented (scheduled for Milestone 5).

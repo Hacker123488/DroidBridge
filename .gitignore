@@ -1,0 +1,72 @@
+# ==========================================
+# macOS System Files
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ==========================================
+# Swift Package Manager & Build Artifacts
+# ==========================================
+.build/
+.swiftpm/
+DerivedData/
+*.moved-aside
+*.app
+*.dSYM/
+*.ipa
+*.pkg
+
+# ==========================================
+# Xcode User & Workspace State
+# ==========================================
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/xcshareddata/
+!*.xcworkspace/contents.xcworkspacedata
+*.xcworkspace/*
+
+# ==========================================
+# Android & ADB Security Keys / Local Config
+# ==========================================
+local.properties
+adbkey
+adbkey.pub
+*.keystore
+*.jks
+google-services.json
+
+# ==========================================
+# Environment Variables & Secrets
+# ==========================================
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.cer
+
+# ==========================================
+# Editors & IDEs
+# ==========================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.orig
+
+# ==========================================
+# Logs & Temporary Files
+# ==========================================
+*.log
+*.tmp
+*.bak
+crashlytics-build.properties

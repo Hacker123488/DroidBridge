@@ -4,10 +4,13 @@ import Foundation
 public actor ConnectionManager: ConnectionManagerProtocol {
     private var activeTransports: [String: any DeviceTransport] = [:]
     private var mockTransportFactory: (@Sendable (DeviceDescriptor) -> any DeviceTransport)?
+    private let adbRunner: any ADBCommandRunner
     
     public init(
+        adbRunner: (any ADBCommandRunner)? = nil,
         mockTransportFactory: (@Sendable (DeviceDescriptor) -> any DeviceTransport)? = nil
     ) {
+        self.adbRunner = adbRunner ?? ProcessADBCommandRunner()
         self.mockTransportFactory = mockTransportFactory
     }
     
@@ -39,10 +42,15 @@ public actor ConnectionManager: ConnectionManagerProtocol {
                     model: device.model
                 )
             }
+        } else if device.connectionType == .usbADB {
+            transport = ADBDeviceTransport(
+                descriptor: device,
+                runner: adbRunner
+            )
         } else {
-            // Milestone 1: Physical MTP / ADB transports are not yet implemented
+            // Milestone 3: Physical MTP / Wireless ADB transports are not yet implemented
             throw DeviceError.unsupportedOperation(
-                "Physical transport for \(device.connectionType.rawValue) is not yet implemented in Milestone 1."
+                "Physical transport for \(device.connectionType.rawValue) is not yet implemented in Milestone 2."
             )
         }
         
