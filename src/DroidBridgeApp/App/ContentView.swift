@@ -27,7 +27,7 @@ public struct ContentView: View {
                 
                 List(viewModel.devices) { device in
                     HStack {
-                        Image(systemName: device.isSimulated ? "desktopcomputer" : "cable.connector")
+                        Image(systemName: device.isSimulated ? "desktopcomputer" : (device.connectionType == .usbMTP ? "cable.connector.horizontal" : "cable.connector"))
                         VStack(alignment: .leading) {
                             Text(device.name)
                                 .font(.body)
@@ -60,146 +60,168 @@ public struct ContentView: View {
             .navigationSplitViewColumnWidth(min: 220, ideal: 260)
         } detail: {
             VStack(spacing: 0) {
-                if let _ = viewModel.selectedDevice {
-                    // Path Header & Action Toolbar
-                    HStack(spacing: 8) {
-                        Text(viewModel.currentPath)
-                            .font(.system(.subheadline, design: .monospaced))
-                            .lineLimit(1)
-                        
-                        Spacer()
-                        
-                        if viewModel.currentPath != "/sdcard" && viewModel.currentPath != "/" {
-                            Button("Up") {
-                                Task { await viewModel.navigateUp() }
-                            }
-                            .disabled(viewModel.isTransferring)
+                if let device = viewModel.selectedDevice {
+                    if device.connectionType == .usbMTP {
+                        VStack(spacing: 16) {
+                            Spacer()
+                            Image(systemName: "cable.connector.horizontal")
+                                .font(.system(size: 48))
+                                .foregroundColor(.accentColor)
+                            Text(device.name)
+                                .font(.title2)
+                                .fontWeight(.semibold)
+                            Text("MTP Device Connected")
+                                .font(.headline)
+                                .foregroundColor(.secondary)
+                            Text("Native passive USB discovery is active.\nFull file browsing, uploads and downloads will be enabled in Milestone 3.3.")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 32)
+                            Spacer()
                         }
-                        
-                        // Upload Button
-                        Button(action: {
-                            viewModel.promptAndUpload()
-                        }) {
-                            Label("Upload...", systemImage: "arrow.up.circle.fill")
-                        }
-                        .disabled(viewModel.isTransferring || viewModel.activeTransport == nil)
-                        
-                        // Paste Button
-                        Button(action: {
-                            Task { await viewModel.paste() }
-                        }) {
-                            Label("Paste", systemImage: "doc.on.clipboard")
-                        }
-                        .disabled(viewModel.isTransferring || viewModel.activeTransport == nil)
-                        
-                        // Quick Look / Media Preview Toolbar Button
-                        if viewModel.selectedItems.count == 1 && !(viewModel.selectedItems.first?.isDirectory ?? true) {
-                            let item = viewModel.selectedItems.first!
-                            Button(action: {
-                                Task { await viewModel.togglePreview() }
-                            }) {
-                                Label(item.isMedia ? "Play" : "Preview", systemImage: item.isMedia ? "play.circle" : "eye")
-                            }
-                            .help(item.isMedia ? "Play Media Preview (Space)" : "Quick Look Preview (Space)")
-                        }
-                        
-                        // Clear Selection Button (when items selected)
-                        if !viewModel.selectedItemIDs.isEmpty {
-                            Button(action: {
-                                viewModel.clearSelection()
-                            }) {
-                                Label("Clear (\(viewModel.selectedItemIDs.count))", systemImage: "xmark.circle")
-                            }
-                            .buttonStyle(.bordered)
-                            .help("Clear selection (Esc)")
-                        }
-                        
-                        // Delete Button (when items selected)
-                        if !viewModel.selectedItemIDs.isEmpty {
-                            Button(role: .destructive, action: {
-                                Task { await viewModel.deleteSelectedItems() }
-                            }) {
-                                Label("Delete (\(viewModel.selectedItemIDs.count))", systemImage: "trash")
-                            }
-                            .disabled(viewModel.isTransferring)
-                        }
-                        
-                        // Conflict Resolution Menu
-                        Menu {
-                            Button("Rename with Timestamp") { viewModel.conflictResolution = .renameWithTimestamp }
-                            Button("Overwrite") { viewModel.conflictResolution = .overwrite }
-                            Button("Fail / Prompt") { viewModel.conflictResolution = .fail }
-                        } label: {
-                            Image(systemName: "slider.horizontal.3")
-                        }
-                        .menuStyle(.borderlessButton)
-                        .help("Conflict Resolution: \(viewModel.conflictResolution.rawValue)")
-                    }
-                    .padding()
-                    .background(Color(NSColor.controlBackgroundColor))
-                    
-                    // Transfer Progress Banner
-                    if viewModel.isTransferring {
-                        VStack(spacing: 4) {
-                            HStack {
-                                Text(viewModel.transferStatusText)
-                                    .font(.caption)
-                                    .foregroundColor(.primary)
-                                Spacer()
-                                Button("Cancel") {
-                                    viewModel.cancelTransfer()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        // Path Header & Action Toolbar
+                        HStack(spacing: 8) {
+                            Text(viewModel.currentPath)
+                                .font(.system(.subheadline, design: .monospaced))
+                                .lineLimit(1)
+                            
+                            Spacer()
+                            
+                            if viewModel.currentPath != "/sdcard" && viewModel.currentPath != "/" {
+                                Button("Up") {
+                                    Task { await viewModel.navigateUp() }
                                 }
-                                .font(.caption)
+                                .disabled(viewModel.isTransferring)
                             }
-                            ProgressView(value: viewModel.transferProgressFraction)
-                        }
-                        .padding(.horizontal)
-                        .padding(.vertical, 6)
-                        .background(Color.accentColor.opacity(0.08))
-                    }
-                    
-                    // File Browser with Native Activation, Multi-Selection & Drag & Drop
-                    ScrollView {
-                        LazyVStack(spacing: 2) {
-                            // Parent directory entry (..) when navigated inside a directory
-                            if let parentItem = viewModel.parentDirectoryItem {
+                            
+                            // Upload Button
+                            Button(action: {
+                                viewModel.promptAndUpload()
+                            }) {
+                                Label("Upload...", systemImage: "arrow.up.circle.fill")
+                            }
+                            .disabled(viewModel.isTransferring || viewModel.activeTransport == nil)
+                            
+                            // Paste Button
+                            Button(action: {
+                                Task { await viewModel.paste() }
+                            }) {
+                                Label("Paste", systemImage: "doc.on.clipboard")
+                            }
+                            .disabled(viewModel.isTransferring || viewModel.activeTransport == nil)
+                            
+                            // Quick Look / Media Preview Toolbar Button
+                            if viewModel.selectedItems.count == 1 && !(viewModel.selectedItems.first?.isDirectory ?? true) {
+                                let item = viewModel.selectedItems.first!
                                 Button(action: {
-                                    let mods = NSEvent.modifierFlags
-                                    Task { await viewModel.handleRowClick(parentItem, eventModifiers: mods) }
+                                    Task { await viewModel.togglePreview() }
                                 }) {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: "arrow.turn.up.left")
-                                             .foregroundColor(.blue)
-                                             .font(.system(size: 16))
-                                        Text("..")
-                                            .fontWeight(.semibold)
-                                        Text("(Parent Directory)")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                        Spacer()
+                                    Label(item.isMedia ? "Play" : "Preview", systemImage: item.isMedia ? "play.circle" : "eye")
+                                }
+                                .help(item.isMedia ? "Play Media Preview (Space)" : "Quick Look Preview (Space)")
+                            }
+                            
+                            // Clear Selection Button (when items selected)
+                            if !viewModel.selectedItemIDs.isEmpty {
+                                Button(action: {
+                                    viewModel.clearSelection()
+                                }) {
+                                    Label("Clear (\(viewModel.selectedItemIDs.count))", systemImage: "xmark.circle")
+                                }
+                                .buttonStyle(.bordered)
+                                .help("Clear selection (Esc)")
+                            }
+                            
+                            // Delete Button (when items selected)
+                            if !viewModel.selectedItemIDs.isEmpty {
+                                Button(role: .destructive, action: {
+                                    Task { await viewModel.deleteSelectedItems() }
+                                }) {
+                                    Label("Delete (\(viewModel.selectedItemIDs.count))", systemImage: "trash")
+                                }
+                                .disabled(viewModel.isTransferring)
+                            }
+                            
+                            // Conflict Resolution Menu
+                            Menu {
+                                Button("Rename with Timestamp") { viewModel.conflictResolution = .renameWithTimestamp }
+                                Button("Overwrite") { viewModel.conflictResolution = .overwrite }
+                                Button("Fail / Prompt") { viewModel.conflictResolution = .fail }
+                            } label: {
+                                Image(systemName: "slider.horizontal.3")
+                            }
+                            .menuStyle(.borderlessButton)
+                            .help("Conflict Resolution: \(viewModel.conflictResolution.rawValue)")
+                        }
+                        .padding()
+                        .background(Color(NSColor.controlBackgroundColor))
+                        
+                        // Transfer Progress Banner
+                        if viewModel.isTransferring {
+                            VStack(spacing: 4) {
+                                HStack {
+                                    Text(viewModel.transferStatusText)
+                                        .font(.caption)
+                                        .foregroundColor(.primary)
+                                    Spacer()
+                                    Button("Cancel") {
+                                        viewModel.cancelTransfer()
                                     }
-                                    .padding(.vertical, 5)
-                                    .padding(.horizontal, 8)
-                                    .contentShape(Rectangle())
+                                    .font(.caption)
+                                }
+                                ProgressView(value: viewModel.transferProgressFraction)
+                            }
+                            .padding(.horizontal)
+                            .padding(.vertical, 6)
+                            .background(Color.accentColor.opacity(0.08))
+                        }
+                        
+                        // File Browser with Native Activation, Multi-Selection & Drag & Drop
+                        ScrollView {
+                            LazyVStack(spacing: 2) {
+                                // Parent directory entry (..) when navigated inside a directory
+                                if let parentItem = viewModel.parentDirectoryItem {
+                                    Button(action: {
+                                        let mods = NSEvent.modifierFlags
+                                        Task { await viewModel.handleRowClick(parentItem, eventModifiers: mods) }
+                                    }) {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: "arrow.turn.up.left")
+                                                 .foregroundColor(.blue)
+                                                 .font(.system(size: 16))
+                                            Text("..")
+                                                .fontWeight(.semibold)
+                                            Text("(Parent Directory)")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                            Spacer()
+                                        }
+                                        .padding(.vertical, 5)
+                                        .padding(.horizontal, 8)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                
+                                ForEach(viewModel.storageItems) { item in
+                                    StorageItemRowView(item: item, viewModel: viewModel)
+                                }
+                                
+                                // Blank Space click target: Clicking empty space clears selection
+                                Button(action: {
+                                    viewModel.clearSelection()
+                                }) {
+                                    Color.white.opacity(0.001)
+                                        .frame(maxWidth: .infinity, minHeight: 120)
                                 }
                                 .buttonStyle(.plain)
                             }
-                            
-                            ForEach(viewModel.storageItems) { item in
-                                StorageItemRowView(item: item, viewModel: viewModel)
-                            }
-                            
-                            // Blank Space click target: Clicking empty space clears selection
-                            Button(action: {
-                                viewModel.clearSelection()
-                            }) {
-                                Color.white.opacity(0.001)
-                                    .frame(maxWidth: .infinity, minHeight: 120)
-                            }
-                            .buttonStyle(.plain)
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 6)
                         }
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 6)
                     }
                 } else {
                     VStack(spacing: 12) {

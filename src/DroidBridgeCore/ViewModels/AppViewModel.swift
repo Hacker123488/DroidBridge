@@ -63,6 +63,8 @@ public final class AppViewModel {
     public var activeMediaItem: StorageItem?
     
     private var activeTransferTask: Task<Void, Never>?
+    private var activeDiscoveryComposite: CompositeDeviceDiscoveryService?
+    private var discoveryObservationTask: Task<Void, Never>?
     public let connectionManager: ConnectionManager
     
     public init(connectionManager: ConnectionManager = ConnectionManager()) {
@@ -77,25 +79,73 @@ public final class AppViewModel {
     
     // MARK: - Device Lifecycle
     
-    public func loadDevices(adbRunner: (any ADBCommandRunner)? = nil) async {
+    public func loadDevices(
+        adbRunner: (any ADBCommandRunner)? = nil,
+        mtpDiscovery: (any DeviceDiscoveryService)? = nil
+    ) async {
         let adbDiscovery: ADBDeviceDiscoveryService
         if let runner = adbRunner {
             adbDiscovery = ADBDeviceDiscoveryService(runner: runner)
         } else {
             adbDiscovery = ADBDeviceDiscoveryService()
         }
+        let mtp = mtpDiscovery ?? MTPDeviceDiscoveryService()
         let mockDiscovery = MockDeviceDiscoveryService(enableSimulatedDevices: isDevMockEnabled)
-        let composite = CompositeDeviceDiscoveryService(adbDiscovery: adbDiscovery, mockDiscovery: mockDiscovery)
+        let composite = CompositeDeviceDiscoveryService(
+            adbDiscovery: adbDiscovery,
+            mtpDiscovery: mtp,
+            mockDiscovery: mockDiscovery
+        )
+        self.activeDiscoveryComposite = composite
+        try? await composite.startDiscovery()
+        
         devices = await composite.availableDevices()
+        
+        // Setup real-time event-driven updates from composite discovery
+        startDiscoveryObservation(composite: composite)
+        
         if selectedDevice == nil, let first = devices.first {
             selectedDevice = first
             await connectToDevice(first)
+        } else if let sel = selectedDevice, !devices.contains(where: { $0.id == sel.id }) {
+            // Selected device was disconnected
+            selectedDevice = nil
+            activeTransport = nil
+            storageItems = []
+            statusMessage = "Device disconnected."
+        }
+    }
+    
+    private func startDiscoveryObservation(composite: CompositeDeviceDiscoveryService) {
+        discoveryObservationTask?.cancel()
+        discoveryObservationTask = Task { [weak self, composite] in
+            for await updatedDevices in composite.deviceUpdates {
+                guard let self = self else { break }
+                self.devices = updatedDevices
+                if let sel = self.selectedDevice, !updatedDevices.contains(where: { $0.id == sel.id }) {
+                    self.selectedDevice = nil
+                    self.activeTransport = nil
+                    self.storageItems = []
+                    self.statusMessage = "Device disconnected."
+                }
+            }
         }
     }
     
     public func connectToDevice(_ device: DeviceDescriptor) async {
         statusMessage = "Connecting to \(device.name)..."
         lastError = nil
+        
+        // Milestone 3.2: MTP discovery is passive. File browsing is deferred to Milestone 3.3.
+        if device.connectionType == .usbMTP {
+            self.selectedDevice = device
+            self.activeTransport = nil
+            self.storageItems = []
+            self.selectedItemIDs.removeAll()
+            self.statusMessage = "MTP device detected (\(device.name)). File browsing will be enabled in Milestone 3.3."
+            return
+        }
+        
         do {
             let transport = try await connectionManager.connect(to: device)
             self.activeTransport = transport
