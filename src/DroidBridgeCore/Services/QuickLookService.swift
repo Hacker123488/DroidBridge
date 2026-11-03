@@ -26,7 +26,7 @@ public final class QuickLookCoordinator: NSObject, QLPreviewPanelDataSource, QLP
     public func present(url: URL, title: String) {
         currentItem = QuickLookItem(url: url, title: title)
         isPanelActive = true
-        guard let panel = QLPreviewPanel.shared() else { return }
+        guard NSApp.delegate != nil, let panel = QLPreviewPanel.shared() else { return }
         panel.dataSource = self
         panel.delegate = self
         panel.reloadData()
@@ -58,7 +58,9 @@ public final class QuickLookCoordinator: NSObject, QLPreviewPanelDataSource, QLP
         isPanelActive = false
         currentItem = nil
         guard let panel = QLPreviewPanel.shared(), panel.isVisible else { return }
-        panel.orderOut(nil)
+        if NSApp.delegate != nil {
+            panel.orderOut(nil)
+        }
     }
     
     /// Checks whether Quick Look panel is currently active/visible.
