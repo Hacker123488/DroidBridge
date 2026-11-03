@@ -25,13 +25,19 @@ public final class ADBTransferService: TransferService, @unchecked Sendable {
         options: TransferOptions,
         progress: @Sendable @escaping (TransferProgress) -> Void
     ) async throws -> StorageItem {
-        guard FileManager.default.fileExists(atPath: localURL.path) else {
+        var isLocalDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isLocalDir) else {
             throw DeviceError.itemNotFound(path: localURL.path)
         }
         
         let validRemote = try ADBFileSystem.validateRemotePath(remotePath)
-        let localValues = try localURL.resourceValues(forKeys: [.fileSizeKey])
-        let fileSize = Int64(localValues.fileSize ?? 0)
+        let fileSize: Int64
+        if isLocalDir.boolValue {
+            fileSize = 0
+        } else {
+            let localValues = try localURL.resourceValues(forKeys: [.fileSizeKey])
+            fileSize = Int64(localValues.fileSize ?? 0)
+        }
         
         // Determine whether target is a directory
         var targetFilename = localURL.lastPathComponent
@@ -119,7 +125,6 @@ public final class ADBTransferService: TransferService, @unchecked Sendable {
         try FileManager.default.createDirectory(at: localURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         
         progress(TransferProgress(bytesTransferred: 0, totalBytes: remoteItem.size, speedBytesPerSec: 0))
-        
         let result = try await runner.run(arguments: ["-s", serial, "pull", validRemote, localURL.path])
         
         if !result.isSuccess {
@@ -136,5 +141,50 @@ public final class ADBTransferService: TransferService, @unchecked Sendable {
         }
         
         progress(TransferProgress(bytesTransferred: remoteItem.size, totalBytes: remoteItem.size, speedBytesPerSec: 25 * 1024 * 1024))
+    }
+    
+    public func downloadDirectory(
+        remotePath: String,
+        localURL: URL,
+        options: TransferOptions,
+        progress: @Sendable @escaping (TransferProgress) -> Void
+    ) async throws {
+        let validRemote = try ADBFileSystem.validateRemotePath(remotePath)
+        let remoteItem = try await fileSystem.getItem(at: validRemote)
+        guard remoteItem.isDirectory else {
+            throw DeviceError.invalidPath(path: "downloadDirectory called on non-directory.")
+        }
+        
+        // Handle local conflict
+        if FileManager.default.fileExists(atPath: localURL.path) {
+            switch options.conflictResolution {
+            case .fail:
+                throw DeviceError.itemAlreadyExists(path: localURL.path)
+            case .overwrite:
+                try? FileManager.default.removeItem(at: localURL)
+            case .renameWithTimestamp:
+                break
+            }
+        }
+        
+        try FileManager.default.createDirectory(at: localURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        
+        progress(TransferProgress(bytesTransferred: 0, totalBytes: remoteItem.size, speedBytesPerSec: 0))
+        
+        let result = try await runner.run(arguments: ["-s", serial, "pull", validRemote, localURL.path])
+        
+        if !result.isSuccess {
+            let err = result.stderr.lowercased() + result.stdout.lowercased()
+            if (err.contains("device") && err.contains("not found")) || err.contains("device offline") || err.contains("device not found") {
+                throw DeviceError.deviceDisconnected(deviceID: serial)
+            }
+            throw DeviceError.ioError(message: "adb pull directory failed: \(result.stderr)")
+        }
+        
+        guard FileManager.default.fileExists(atPath: localURL.path) else {
+            throw DeviceError.ioError(message: "Verification failed: downloaded directory not found on local disk after adb pull.")
+        }
+        
+        progress(TransferProgress(bytesTransferred: 1024, totalBytes: 1024, speedBytesPerSec: 25 * 1024 * 1024))
     }
 }

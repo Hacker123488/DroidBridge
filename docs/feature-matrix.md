@@ -20,8 +20,12 @@ This document benchmarks **DroidBridge**'s target functional specifications agai
 | • Native Finder Drive Mount | ⏳ Planned (Milestone 5) | ✅ FileProvider | ✅ FileProvider | ❌ No Mount | ❌ No Mount | ❌ No Mount |
 | • FinderSync Sidebar & Badges | ⏳ Planned (Milestone 5) | ✅ Included | ✅ Included | ❌ No FinderSync | ❌ No FinderSync | ❌ No FinderSync |
 | • Menu Bar Status Item | ⏳ Planned (Milestone 5) | ✅ Included | ✅ Included | ✅ Included | ❌ Not Supported | ❌ Not Supported |
-| • Drag-and-Drop to/from Finder | ⏳ Planned (Milestone 5) | ✅ Native | ✅ Native | ⚠️ Read-only to Finder | ⚠️ Flaky | ⚠️ Internal UI only |
-| • Quick Look File Previews | ⏳ Planned (Milestone 5) | ✅ Supported | ✅ Supported | ⚠️ Limited | ❌ Not Supported | ❌ Not Supported |
+| • Drag-and-Drop to/from Finder | ✅ Verified (Milestone 2.2.5) | ✅ Native | ✅ Native | ⚠️ Read-only to Finder | ⚠️ Flaky | ⚠️ Internal UI only |
+| • Native Clipboard (Copy/Cut/Paste)| ✅ Verified (Milestone 2.2.5) | ✅ System Pasteboard | ✅ Supported | ❌ Limited | ❌ Not Supported | ⚠️ Internal only |
+| • Multi-Item Selection & Batch Ops | ✅ Verified (Milestone 2.2.5) | ✅ Shift/Cmd Select | ✅ Supported | ⚠️ Limited | ❌ Basic | ✅ Supported |
+| • Quick Look & AVKit Media Preview | ✅ Verified (Milestone 2.2.5) | ✅ QLPreviewPanel & AVPlayer | ✅ Supported | ⚠️ Limited | ❌ Not Supported | ❌ Not Supported |
+| • Same-Location Drop Protection    | ✅ Verified (Milestone 2.2.5) | ✅ No-op / Zero Transfer | ✅ Supported | ❌ Duplicates | ❌ Overwrites | ⚠️ Re-transfers |
+| • Shell Quoting & Spaces Security  | ✅ Verified (Milestone 2.2.5) | ✅ Robust POSIX Escaping | ✅ Supported | ⚠️ Flaky on spaces | ❌ Broken on spaces | ⚠️ Flaky |
 | **File Transfer Engine** | | | | | | |
 | • Two-Way Bidirectional | ✅ Verified (Mock & ADB) | ✅ Full Read/Write | ✅ Full Read/Write | ❌ Read-Only (Mac <- Android) | ✅ Read/Write | ✅ Read/Write |
 | • Files > 4 GB Support | ⏳ Planned (Physical Lab) | ✅ 64-bit offsets | ✅ Supported | ⚠️ Read only | ❌ Fails on >4GB | ✅ Supported |
@@ -72,6 +76,17 @@ This document benchmarks **DroidBridge**'s target functional specifications agai
   - Interactive Desktop Transfer UI: `ContentView` and `AppViewModel` wire up `ADBTransferService` to `NSOpenPanel` (Upload) and `NSSavePanel` (Download), with real-time progress fraction, cancellation, and visible error alerts.
   - Configuration Override Fix: `ADBConfiguration` strictly honors `customADBPath` without falling back to PATH/Homebrew when an invalid custom path is provided.
   - Test Suite Expansion: 138/138 automated test assertions passing across 17 test suites.
+- **Completed & Verified in Milestone 2.2:**
+  - Native Drag-and-Drop: Mac-to-Android file and directory drop with batch uploading and conflict resolution; Android-to-Mac drag-out with isolated staging via `NSTemporaryDirectory()` preventing partial file exposure.
+  - Native Clipboard Integration: `Cmd+C`, `Cmd+X`, `Cmd+V`, `Cmd+A` keyboard shortcuts and system pasteboard support using `com.droidbridge.android-items` and `public.file-url`. Supports Mac Finder -> Android, Android -> Mac Finder, and internal Android -> Android copy and move.
+  - Safe Move Semantics: Fast-path `adb shell mv` with fallback to `cp -r` and post-copy size/stat verification before deleting the source.
+  - Selection Architecture: Single, multi (`Cmd+click`), range (`Shift+click`), and select all (`Cmd+A`) with visual indicators and contextual menu actions (Download, Copy, Cut, Paste, Rename, Delete).
+  - Test Suite Expansion: 171 automated test assertions passing across 19 test suites.
+- **Completed & Verified in Milestones 2.2.1 & 2.2.2:**
+  - Definitive File Browser Activation: Replaced table view layer with `ScrollView` and native plain `Button` row actions. Uses inter-click timestamp delta against `NSEvent.doubleClickInterval` (0.5s): single-click selects immediately; double-click opens immediately without gesture recognizer collisions.
+  - Explicit Open Chevron: Added folder chevron button for immediate one-click folder opening.
+  - Full Deselection Suite: Cmd+Click toggle/deselection, blank space click deselection, visible "Clear Selection" toolbar & footer buttons, Escape shortcut, and multi-selection drag preservation.
+  - Test Suite Expansion: **219/219 automated test assertions passing** across 21 test suites.
 - **Explicit Non-Claims:**
   - Physical USB MTP protocol communication is not yet implemented (scheduled for Milestone 3).
   - Wireless pairing (mDNS TLS pairing) is not yet implemented (scheduled for Milestone 2.2).

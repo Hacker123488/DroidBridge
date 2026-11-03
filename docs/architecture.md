@@ -92,6 +92,45 @@ flowchart TD
   - `ADBDeviceDiscoveryService` — calls `adb devices -l` and parses the output.
   - `CompositeDeviceDiscoveryService` — aggregates both; results are tagged by source.
 
+#### Milestone 2.2 — Implemented ✅
+
+- **Native macOS Drag & Drop Architecture:**
+  - **Mac to Android (`onDrop`):** Handles `NSItemProvider` instances conforming to `UTType.fileURL`. Extracts local file and folder paths, performs batch upload to the active Android directory using `TransferOptions` and user-configured `ConflictResolutionPolicy` (`.fail`, `.overwrite`, `.renameWithTimestamp`), and rejects unsupported or invalid items with immediate status notifications.
+  - **Android to Mac (`onDrag` & Staging):** Uses `NSItemProvider(contentsOf:)` pointing to a securely staged copy. When dragging begins, `stageItemsForExport` downloads the requested items into an isolated session directory (`NSTemporaryDirectory()/droidbridge_export_<UUID>/`). On any error or cancellation, the staging directory is cleaned up immediately, ensuring partially downloaded files are never exposed to Finder or the macOS Desktop.
+- **Native macOS Clipboard System (`NSPasteboard`):**
+  - Custom pasteboard UTType: `com.droidbridge.android-items`.
+  - Serializes `AndroidClipboardPayload` containing `operation` (`.copy` vs `.cut`), source device serial, current directory, and an array of `ClipboardItem` objects.
+  - Also populates file URLs (`NSPasteboard.PasteboardType.fileURL`) for interoperability with macOS Finder.
+  - Intercepts `Cmd+C` (Copy), `Cmd+X` (Cut), `Cmd+V` (Paste), `Cmd+A` (Select All), `Delete` (Delete Selected), and `Escape` (Clear Selection).
+  - Handles three paste routes:
+    1. **Mac Finder → Android:** Reads file URLs from pasteboard and streams them into the current Android directory via `ADBTransferService`.
+    2. **Android → Android Copy:** Dispatches `adb shell cp -r` directly on the device.
+    3. **Android → Android Move (Cut):** Dispatches `moveItem(from:to:)` using fast-path `mv` with copy-verify-delete fallback, and clears the cut clipboard upon completion.
+- **Safe Move & Integrity Verification:**
+  - `moveItem(from:to:)` attempts fast atomic rename via `adb shell mv`.
+  - If cross-filesystem or permission errors occur, falls back to `copyItem(from:to:)` (`cp -r`), verifies that destination exists and has matching file size, and only then deletes the source via `deleteItem(at:)`.
+
+#### Milestone 2.2.3 — Implemented ✅
+
+- **Finder-style Spacebar Quick Look (`QuickLookService.swift`):**
+  - Conforms to `QLPreviewPanelDataSource` and `QLPreviewPanelDelegate` (`QuickLookCoordinator.shared`).
+  - Presents native macOS floating Quick Look preview (`QLPreviewPanel`) for files selected on the Android device.
+  - Transparent caching mechanism: downloads preview file into isolated temporary cache (`NSTemporaryDirectory()/droidbridge_quicklook_cache/`); subsequent preview requests for unmodified files reuse the local copy.
+  - Responsive keyboard arrow switching: navigating `Up` or `Down` arrows automatically updates the Quick Look item without re-presenting or flickering the panel.
+  - Dismissible with `Space` or `Escape`.
+- **AppKit Key Event Monitor Representable (`KeyEventHandlerView`):**
+  - Installs an `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` monitor on the window level.
+  - Solves the classic SwiftUI focus-loss issue where hidden zero-sized shortcut buttons stop responding in `ScrollView` layouts.
+  - Automatically yields to active text inputs (such as rename sheets or text fields) when `firstResponder is NSText || firstResponder is NSTextView`.
+  - Routes `Space`, `Escape`, `Return`, `Delete`, `Up/Down Arrow`, `Cmd+C`, `Cmd+X`, `Cmd+V`, `Cmd+A` directly to `AppViewModel`.
+- **Finder-Compatible Drag-Out Format:**
+  - Registers `UTType.fileURL.identifier` (`public.file-url`) on `NSItemProvider`, resolving Finder's refusal to accept generic `public.data` drops.
+  - Prepares local representations asynchronously and provides valid local file URLs on drop completion.
+- **Finder Pasteboard Interoperability:**
+  - `copySelection` writes both internal `AndroidClipboardPayload` and stages local representations to `NSPasteboard` (`[NSURL]`), enabling seamless cross-application `Cmd+C` in DroidBridge $\to$ `Cmd+V` in Finder.
+- **CRLF-Resilient Drop-In Parsing:**
+  - Strips carriage return and newline characters (`\r\n`) from incoming pasteboard `UTType.fileURL` data representations, preventing erroneous URL parsing.
+
 #### Planned — Future Milestones
 
 - **`DeviceRegistry` (IOKit/mDNS):** USB hotplug via `IOServiceAddMatchingNotification`; mDNS for wireless ADB. Planned for Milestone 3.
@@ -229,7 +268,13 @@ DroidBridge adheres to macOS App Sandbox guidelines:
 | **M1:** Mock Harness & Core Interfaces | ✅ Complete | 6 protocols, MockDeviceTransport, TransferQueueService, 50/50 tests |
 | **M2:** ADB USB Connectivity | ✅ Complete | ProcessADBCommandRunner, 9 ADB components, 103/103 tests (50 M1 regression + 53 M2 new) |
 | **M2.1:** Hardware Browsing Fix & File Transfer UI | ✅ Complete | `-L` symlink dereferencing, Upload/Download UI in ContentView, 138/138 tests |
-| **M2.2:** Wireless ADB (Wi-Fi TLS Pairing) | 🔜 Planned | `wirelessADB` enum case present; mDNS + TLS pairing not yet implemented |
+| **M2.2:** Native macOS Drag & Drop and Clipboard | ✅ Complete | Batch Mac->Android, Staged Android->Mac, System Pasteboard, Safe Move, 171/171 tests |
+| **M2.2.1:** Folder Navigation & Gesture Separation | ✅ Complete | Single-click selection, double-click open, chevron direct buttons, 201/201 tests |
+| **M2.2.2:** Definitive Navigation & Deselection | ✅ Complete | ScrollView + LazyVStack plain buttons, Cmd+Click toggle, blank space clear, 219/219 tests |
+| **M2.2.3:** Restored Drag & Drop & Quick Look | ✅ Complete | QLPreviewPanel integration, resilient dropped URL parsing, 239/239 tests |
+| **M2.2.4:** Definitive D&D, Same-Location Protection & Media | ✅ Complete | Same-location zero-transfer guard, multi-drag, AVKit AVPlayer, pasteboard sync, 282/282 tests |
+| **M2.2.5:** Runtime Reliability Audit & E2E Repair | ✅ Complete | POSIX shell escaping, whitespace-preserving parser, full-row drag, Edit menu bridge, 304/304 tests, hardware verified |
+| **M2.3:** Wireless ADB (Wi-Fi TLS Pairing) | 🔜 Planned | `wirelessADB` enum case present; mDNS + TLS pairing not yet implemented |
 | **M3:** MTP USB Protocol | 🔜 Planned | `usbMTP` enum case present; libmtp/libusb integration not started |
 | **M4:** Transfer Queue Enhancements | 🔜 Planned | Priority reordering, pause/resume, speed curves |
 | **M5:** macOS Finder Integration | 🔜 Planned | FileProvider + FinderSync extensions |

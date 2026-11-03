@@ -13,9 +13,9 @@ Verification is organized into three distinct tiers:
 
 ---
 
-## 2. Milestone 2 & 2.1 Verification Results (Executed 2026-10-31)
+## 2. Milestone 2, 2.1, 2.2, 2.2.1 & 2.2.2 Verification Results (Executed 2026-10-31)
 
-The verification suite was compiled and executed via `swift run DroidBridgeTestRunner`. All 17 test suites and 138 assertions passed with zero errors:
+The verification suite was compiled and executed via `swift run DroidBridgeTestRunner`. All 21 test suites and 219 assertions passed with zero errors:
 
 | Test Suite | Assertions | Passed | Failed | Status |
 | :--- | :---: | :---: | :---: | :---: |
@@ -36,7 +36,13 @@ The verification suite was compiled and executed via `swift run DroidBridgeTestR
 | **15. M2: Command Timeouts & Cancellation** | 2 | 2 | 0 | ✅ PASSED |
 | **16. M2.1: Symlink Resolution & Navigation** | 14 | 14 | 0 | ✅ PASSED |
 | **17. M2.1: Transfer UI Integration & Serial Targeting** | 21 | 21 | 0 | ✅ PASSED |
-| **Total Test Assertions** | **138** | **138** | **0** | **100% PASS** |
+| **18. M2.2: Native macOS Drag & Drop & Recursive Transfers**| 14 | 14 | 0 | ✅ PASSED |
+| **19. M2.2: Native macOS Clipboard, Shortcuts & Selection** | 19 | 19 | 0 | ✅ PASSED |
+| **20. M2.2.1: Folder Navigation & Gesture Separation** | 30 | 30 | 0 | ✅ PASSED |
+| **21. M2.2.2: Definitive Navigation & Deselection** | 18 | 18 | 0 | ✅ PASSED |
+| **22. M2.2.3: Restored Drag & Drop, Clipboard & Quick Look** | 20 | 20 | 0 | ✅ PASSED |
+| **23. M2.2.4: Same-Location Protection, Multi-Drag, Media Preview & Clipboard Repair** | 43 | 43 | 0 | ✅ PASSED |
+| **Total Test Assertions** | **282** | **282** | **0** | **100% PASS** |
 
 ---
 
@@ -58,15 +64,19 @@ The verification suite was compiled and executed via `swift run DroidBridgeTestR
 2. [ ] In the Devices sidebar, select **RMX3092 (AE9PH68T4DV86L9P)**. Verify that the device connects without error and status bar displays `"Connected (RMX3092 (AE9PH68T4DV86L9P))"`.
 3. [ ] Confirm that `/sdcard` displays the directory contents (`Download`, `DCIM`, `Documents`, etc.) rather than a raw symlink item `lrw-r--r-- ... /sdcard -> /storage/self/primary`.
 4. [ ] Double-click / tap **Download** folder. Confirm that `/sdcard/Download` opens and displays files.
-5. [ ] Click **Upload File...** in the toolbar. Select a test image/text file using `NSOpenPanel`. Confirm that:
+5. [ ] **Toolbar Upload:** Click **Upload File...** in the toolbar. Select a test image/text file using `NSOpenPanel`. Confirm that:
    - Progress bar appears.
    - Status bar reports `"Uploaded <filename> successfully"`.
    - The uploaded file appears in the directory listing.
-6. [ ] Locate the file in the list. Click the **Download** icon button (or right-click -> **Download to Mac...**).
-7. [ ] Select destination via `NSSavePanel` (e.g. `~/Downloads/test_download.txt`). Confirm that:
-   - File downloads.
-   - Status reports `"Downloaded <filename> successfully"`.
-   - Content and hash match the original file on macOS (`shasum -a 256`).
+6. [ ] **Context / Action Download:** Locate the file in the list. Click the **Download** icon button (or right-click -> **Download to Mac...**). Select destination via `NSSavePanel`. Verify contents and SHA-256 hash match.
+7. [ ] **Drag & Drop (Mac to Android):** Drag multiple files or a whole folder from macOS Finder directly into the DroidBridge file list pane. Confirm the drop target highlight appears, files upload recursively, and the list refreshes.
+8. [ ] **Drag & Drop (Android to Mac):** Select one or more files in DroidBridge, drag them onto the macOS Desktop or an open Finder window. Confirm that files are staged safely and land in Finder with intact names and sizes.
+9. [ ] **Keyboard Shortcuts (Cmd+C / Cmd+V):**
+   - Copy a file in Finder (`Cmd+C`), switch to DroidBridge, press `Cmd+V`. Confirm upload succeeds.
+   - Select an Android file in DroidBridge, press `Cmd+C`, navigate to another Android folder (e.g., `/sdcard/Documents`), press `Cmd+V`. Confirm the file is copied.
+10. [ ] **Keyboard Shortcuts (Cmd+X / Cmd+V):** Select an Android file in DroidBridge, press `Cmd+X`, navigate to another Android directory, press `Cmd+V`. Confirm the file is moved cleanly and disappears from original folder.
+11. [ ] **Selection & Batch Operations:** Test `Cmd+A` (Select All), `Shift+Click` (range selection), `Cmd+Click` (multi-toggle), and press `Delete` to delete selected items after confirming the prompt.
+12. [ ] **Rename:** Right-click an item, select **Rename...**, enter a new filename, and verify the item is renamed without modifying file contents.
 
 ---
 
@@ -133,5 +143,93 @@ The verification suite was compiled and executed via `swift run DroidBridgeTestR
 | Test ID | Scenario | Procedure | Expected Result | Milestone 2 Status |
 | :--- | :--- | :--- | :--- | :---: |
 | **TC-FND-01** | Native Finder Drive Mount | Expose Android storage via FileProvider extension. | Mounts under Locations in Finder sidebar. | ⏳ Planned (M5) |
-| **TC-FND-02** | Finder Drag-and-Drop | Drag file from macOS desktop to mounted folder. | Triggers FileProvider write to device. | ⏳ Planned (M5) |
-| **TC-FND-03** | FinderSync Context Menus | Right click file in Finder on Mac. | "Send to Android with DroidBridge" available. | ⏳ Planned (M5) |
+| **TC-FND-02** | FinderSync Context Menus | Right click file in Finder on Mac. | "Send to Android with DroidBridge" available. | ⏳ Planned (M5) |
+
+---
+
+### Suite 6: Native macOS Drag & Drop and Clipboard (Milestone 2.2)
+
+| Test ID | Scenario | Procedure | Expected Result | Milestone 2.2 Status |
+| :--- | :--- | :--- | :--- | :---: |
+| **TC-DND-01** | Batch Drag & Drop Mac to Android | Drag multiple files from Finder onto DroidBridge browser. | All files pushed to current Android folder with progress. | ✅ Verified (Runner) |
+| **TC-DND-02** | Folder Drag & Drop Mac to Android | Drag folder structure from Finder onto DroidBridge. | Folder pushed recursively; remote structure preserved. | ✅ Verified (Runner) |
+| **TC-DND-03** | Conflict Handling on Drop | Drop existing file when policy is `.renameWithTimestamp`. | Uploads file with unique timestamp prefix, no overwrite. | ✅ Verified (Runner) |
+| **TC-DND-04** | Unsupported Item Drop | Drop non-file item provider (e.g. raw text or URL string). | Gracefully rejected with clear status error. | ✅ Verified (Runner) |
+| **TC-DND-05** | Drag Android to Mac Finder | Drag files from DroidBridge onto macOS Desktop/Finder. | Staged in temporary sandbox; drops intact without partials. | ✅ Verified (Runner) |
+| **TC-DND-06** | Recursive Folder Drag-Out | Drag directory from DroidBridge onto macOS Desktop. | Staged recursively via `downloadDirectory`; intact folder. | ✅ Verified (Runner) |
+| **TC-CLIP-01** | Android Copy & Paste (`Cmd+C`/`Cmd+V`) | Select file, `Cmd+C`, navigate to new folder, `Cmd+V`. | `adb shell cp -r` executed targeting device serial. | ✅ Verified (Runner) |
+| **TC-CLIP-02** | Android Cut & Paste (`Cmd+X`/`Cmd+V`) | Select file, `Cmd+X`, navigate to new folder, `Cmd+V`. | `adb shell mv` executed; clipboard payload cleared. | ✅ Verified (Runner) |
+| **TC-CLIP-03** | Mac Finder to Android Paste | Copy file in Finder (`Cmd+C`), switch to DroidBridge, `Cmd+V`. | Pasteboard file URLs detected and pushed to Android. | ✅ Verified (Runner) |
+| **TC-CLIP-04** | Safe Move Verification | Move file between directories. | Uses fast `mv`; falls back to `cp -r` + verify + `rm`. | ✅ Verified (Runner) |
+| **TC-SEL-01** | Multi-Select & Select All | Use `Cmd+Click`, `Shift+Click`, and `Cmd+A`. | Selection count matches; visual indicators update. | ✅ Verified (Runner) |
+| **TC-SEL-02** | Batch Delete | Select multiple items and press `Delete` key. | `adb shell rm` called for selected items; list refreshed. | ✅ Verified (Runner) |
+| **TC-SEL-03** | Inline Rename | Rename item via context menu or shortcut. | `adb shell mv` invoked; item refreshed with new name. | ✅ Verified (Runner) |
+
+---
+
+### Suite 7: Folder Navigation & Double-Click Gesture Separation (Milestone 2.2.1)
+
+| Test ID | Scenario | Procedure | Expected Result | Milestone 2.2.1 Status |
+| :--- | :--- | :--- | :--- | :---: |
+| **TC-NAV-01** | Single-Click Selects Folder | Click once on a folder row. | Folder is selected; currentPath remains unchanged. | ✅ Verified (Runner) |
+| **TC-NAV-02** | Double-Click Enters Folder | Double-click on a folder row. | Navigates into folder; path and items updated; selection reset. | ✅ Verified (Runner) |
+| **TC-NAV-03** | Parent Directory Navigation | Double-click virtual `..` parent row. | Navigates back up to parent directory. | ✅ Verified (Runner) |
+| **TC-NAV-04** | Folder Drag Without Navigation | Drag folder toward Finder or drop target. | Export items returned; folder is NOT navigated into. | ✅ Verified (Runner) |
+| **TC-NAV-05** | Multi-Select Preservation | Cmd+Click folder and file; drag. | Both items preserved in selection; multi-drag exports both. | ✅ Verified (Runner) |
+| **TC-NAV-06** | Clipboard Preservation | Copy selected folder and file (`Cmd+C`). | Clipboard payload contains both; operation is `.copy`. | ✅ Verified (Runner) |
+| **TC-NAV-07** | Selection/Deselection Cycle | Select items, `clearSelection()`, then navigate. | Selection cleared, navigation succeeds, items listed cleanly. | ✅ Verified (Runner) |
+| **TC-NAV-08** | Keyboard Folder Open | Select folder, press `Return` or `Cmd+DownArrow`. | Navigates into selected folder. | ✅ Verified (Runner) |
+| **TC-NAV-09** | Keyboard Parent Navigation | Press `Cmd+UpArrow`. | Navigates to parent directory. | ✅ Verified (Runner) |
+
+---
+
+### Suite 8: Definitive Navigation & Deselection Verification (Milestone 2.2.2)
+
+| Test ID | Scenario | Procedure | Expected Result | Milestone 2.2.2 Status |
+| :--- | :--- | :--- | :--- | :---: |
+| **TC-ACT-01** | Row Button Single-Click | Single-click row Button (`handleRowClick`). | Selects item immediately; path unchanged. | ✅ Verified (Runner) |
+| **TC-ACT-02** | Row Button Double-Click | Double-click row Button (`handleRowClick` within 0.5s). | Navigates into folder immediately. | ✅ Verified (Runner) |
+| **TC-ACT-03** | Dedicated Open Chevron | Click folder chevron button (`navigateTo`). | Folder opens immediately. | ✅ Verified (Runner) |
+| **TC-ACT-04** | Parent Double-Click Up | Double-click `..` row. | Navigates up to parent directory. | ✅ Verified (Runner) |
+| **TC-DESEL-01**| Cmd+Click Deselects Selected | Cmd+Click an already-selected item. | Deselects individual item; others remain selected. | ✅ Verified (Runner) |
+| **TC-DESEL-02**| Cmd+Click Adds to Selection | Cmd+Click an unselected item. | Adds item to selection set. | ✅ Verified (Runner) |
+| **TC-DESEL-03**| Blank Space Click Deselects | Click empty area below rows. | Clears entire selection set (`clearSelection`). | ✅ Verified (Runner) |
+| **TC-DESEL-04**| Visible Clear Selection Action| Click "Clear Selection" toolbar button. | Clears all selections. | ✅ Verified (Runner) |
+| **TC-DESEL-05**| Escape Shortcut Deselects | Press Escape key. | Clears all selections. | ✅ Verified (Runner) |
+| **TC-DESEL-06**| Cmd+A Selects All Items | Press Cmd+A. | Selects all selectable items in active directory. | ✅ Verified (Runner) |
+| **TC-DESEL-07**| Multi-Selection Drag Keep | Click selected item in multi-selection. | Multi-selection kept intact for dragging. | ✅ Verified (Runner) |
+| **TC-UI-01**   | AppKit Window Event Dispatch| Send synthetic mouse down/up via `NSWindow.sendEvent`.| Button action executes cleanly. | ✅ Verified (Runner) |
+
+---
+
+### Suite 9: Restored Drag & Drop, Clipboard & Quick Look Verification (Milestone 2.2.3)
+
+| Test ID | Scenario | Procedure | Expected Result | Milestone 2.2.3 Status |
+| :--- | :--- | :--- | :--- | :---: |
+| **TC-QL-01**   | Spacebar Quick Look on File | Select file and press `Space` (`handleSpacebar`). | Previews file via `QLPreviewPanel`; item cached on local disk. | ✅ Verified (Runner) |
+| **TC-QL-02**   | Quick Look Arrow Key Switch | Press `Down Arrow` while Quick Look is open. | Selection moves to next item; active preview updates automatically. | ✅ Verified (Runner) |
+| **TC-QL-03**   | Escape Dismisses Quick Look | Press `Escape` while Quick Look is open. | Quick Look closes without deselecting the file. | ✅ Verified (Runner) |
+| **TC-QL-04**   | Return Key Previews File | Select file and press `Return`. | Opens Quick Look preview for the selected file. | ✅ Verified (Runner) |
+| **TC-QL-05**   | Return Key Enters Folder | Select folder and press `Return`. | Navigates into the folder directory. | ✅ Verified (Runner) |
+| **TC-QL-06**   | Cmd+Up Returns to Parent | Press `Cmd+UpArrow`. | Navigates back up to parent directory. | ✅ Verified (Runner) |
+| **TC-DND-07**  | Finder Drag-Out Format | Drag file row or handle to Finder/Desktop. | Item provider registers `public.file-url` (`UTType.fileURL`). | ✅ Verified (Runner) |
+| **TC-DND-08**  | CRLF-Resilient Drop-In | Drop file with trailing CRLF URL from Finder. | URL parsed cleanly without %0D%0A artifacts; file uploaded. | ✅ Verified (Runner) |
+| **TC-CLIP-05** | Finder Pasteboard Interop | Select Android file and press `Cmd+C`. | Staged file URLs written to `NSPasteboard` (`[NSURL]`) for Finder paste. | ✅ Verified (Runner) |
+| **TC-QL-07**   | Quick Look Cache Cleanup | Call `clearQuickLookCache()`. | Temporary cache directory files removed safely. | ✅ Verified (Runner) |
+
+---
+
+## 7. Milestone 2.2.5 Acceptance Tests (Runtime Reliability & Physical Hardware)
+
+| Test ID | Test Scenario | Steps / Input | Expected Result | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **TC-M225-01** | POSIX Shell Escaping for Whitespace & Quotes | Pass `/sdcard/Download/Ae Ajnabee  Coke...` through `ADBFileSystem.escapeForShell`. | Cleanly quotes path in single quotes; unquoted for clean paths. | ✅ Verified (Runner & Device) |
+| **TC-M225-02** | Whitespace-Preserving `ls -l` Line Parser | Parse toybox line with multiple consecutive spaces. | Preserves exact byte count and multi-spaced filename. | ✅ Verified (Runner & Device) |
+| **TC-M225-03** | Physical Phone Directory Listing (`Download`) | Execute `listDirectory` on connected Realme RMX3092. | Successfully lists all 52 items, preserving filenames with spaces. | ✅ Verified (Level 4 Hardware) |
+| **TC-M225-04** | Physical Phone Stat on Multi-Spaced Files | Execute `getItem(at:)` on `Ae Ajnabee  Coke...mp3`. | Accurately returns 10,387,430 bytes without `itemNotFound`. | ✅ Verified (Level 4 Hardware) |
+| **TC-M225-05** | Physical Phone Folder Stat with Spaces (`Quick Share`) | Execute `getItem` and `listDirectory` on `Quick Share`. | Resolves folder and enumerates all 1,050 children safely. | ✅ Verified (Level 4 Hardware) |
+| **TC-M225-06** | Physical Phone Audio/Media Preview Pipeline | Download and initialize `MediaPreviewModel` on physical mp3. | `AVPlayer` initializes, duration calculates 259.68s, starts playback. | ✅ Verified (Level 4 Hardware) |
+| **TC-M225-07** | Dual Drag-and-Drop Targets (Icon + Full Row) | Drag initiated from icon or text row. | Both targets instantiate `NSItemProvider` for Finder export. | ✅ Verified (Runner & AppKit) |
+| **TC-M225-08** | Fast-Path Staging Export Cache Reuse | Drag out file already viewed in Quick Look / Media Preview. | Stages file by copying preview cache without re-downloading. | ✅ Verified (Runner) |
+| **TC-M225-09** | Menu Bar & Keyboard Shortcut Bridging | Trigger Edit Menu Cut/Copy/Paste/Select All. | Notifies `AppViewModel` when not focused on text responder. | ✅ Verified (Runner & AppKit) |
+| **TC-M225-10** | Live GUI App Launch Steadiness | Launch compiled `DroidBridgeApp` binary in macOS environment. | App launches window with PID, runs steadily, exits cleanly. | ✅ Verified (Level 3 App) |

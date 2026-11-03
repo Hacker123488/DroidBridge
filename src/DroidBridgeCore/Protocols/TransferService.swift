@@ -28,4 +28,23 @@ public protocol TransferService: Sendable {
         options: TransferOptions,
         progress: @Sendable @escaping (TransferProgress) -> Void
     ) async throws
+    
+    /// Downloads an entire directory from Android storage to macOS recursively.
+    func downloadDirectory(
+        remotePath: String,
+        localURL: URL,
+        options: TransferOptions,
+        progress: @Sendable @escaping (TransferProgress) -> Void
+    ) async throws
+}
+
+public extension TransferService {
+    func downloadDirectory(
+        remotePath: String,
+        localURL: URL,
+        options: TransferOptions,
+        progress: @Sendable @escaping (TransferProgress) -> Void
+    ) async throws {
+        throw DeviceError.unsupportedOperation("downloadDirectory is not supported by this transfer service.")
+    }
 }

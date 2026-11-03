@@ -1,5 +1,8 @@
 import Foundation
 import Synchronization
+import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
 import DroidBridgeCore
 
 @MainActor
@@ -942,6 +945,954 @@ final class TestRunner {
         try? FileManager.default.removeItem(at: failUploadFile)
     }
 
+    // MARK: - Milestone 2.2 Native Drag & Drop and Clipboard Test Suites
+
+    func runDragAndDropAndFolderTransferTests() async throws {
+        printHeader("M2.2: Native macOS Drag & Drop & Recursive Folder Transfers")
+        
+        let runner = MockADBCommandRunner()
+        let physicalSerial = "AE9PH68T4DV86L9P"
+        let desc = DeviceDescriptor(
+            id: physicalSerial,
+            name: "RMX3092 (\(physicalSerial))",
+            model: "RMX3092",
+            connectionType: .usbADB,
+            isSimulated: false,
+            status: .available
+        )
+        runner.setSimulatedDevicesOutput("""
+        List of devices attached
+        \(physicalSerial)       device usb:1-1 product:RMX3092 model:RMX3092
+        """)
+        
+        let connMgr = ConnectionManager(adbRunner: runner)
+        let vm = AppViewModel(connectionManager: connMgr)
+        await vm.connectToDevice(desc)
+        
+        let tempDir = FileManager.default.temporaryDirectory
+        
+        // Test 1: Multiple file upload (Mac -> Android Drag & Drop batch)
+        let file1 = tempDir.appendingPathComponent("drag_upload_1.txt")
+        let file2 = tempDir.appendingPathComponent("drag_upload_2.txt")
+        try "Content 1".data(using: .utf8)?.write(to: file1)
+        try "Content 2".data(using: .utf8)?.write(to: file2)
+        
+        await vm.uploadItems(at: [file1, file2])
+        let batchCompleted = !vm.isTransferring && vm.transferProgressFraction == 1.0
+        assertTrue(batchCompleted, "Batch file drag & drop upload completed successfully with 100% progress.")
+        assertTrue(vm.statusMessage.contains("Uploaded 2 item(s)"), "Status reports multiple items uploaded.")
+        
+        let calls = runner.recordedCalls()
+        let pushCalls = calls.filter { $0.contains("push") }
+        assertTrue(pushCalls.count >= 2, "ADB push commands invoked for all batch upload items.")
+        assertTrue(pushCalls.allSatisfy { $0[0] == "-s" && $0[1] == physicalSerial }, "All push commands explicitly target physical device serial.")
+        
+        // Test 2: Recursive folder upload (Mac -> Android folder drag & drop)
+        let folderToUpload = tempDir.appendingPathComponent("drag_upload_folder")
+        try? FileManager.default.removeItem(at: folderToUpload)
+        try FileManager.default.createDirectory(at: folderToUpload, withIntermediateDirectories: true)
+        let innerFile = folderToUpload.appendingPathComponent("inner_doc.txt")
+        try "Nested Document".data(using: .utf8)?.write(to: innerFile)
+        
+        await vm.uploadItems(at: [folderToUpload])
+        let folderPush = runner.recordedCalls().last { $0.contains("push") && $0.contains(folderToUpload.path) }
+        assertTrue(folderPush != nil, "ADB push invoked for local folder directory.")
+        assertEqual(folderPush?[1], physicalSerial, "Folder push targets physical device serial.")
+        assertTrue(vm.statusMessage.contains("Uploaded 1 item(s)"), "Folder upload reported successful.")
+        
+        // Test 3: Recursive directory download (Android -> Mac)
+        let localDirDest = tempDir.appendingPathComponent("downloaded_remote_folder")
+        try? FileManager.default.removeItem(at: localDirDest)
+        let remoteFolderItem = StorageItem(
+            id: "Download",
+            name: "Download",
+            path: "/sdcard/Download",
+            size: 4096,
+            modifiedDate: Date(),
+            isDirectory: true
+        )
+        
+        await vm.downloadDirectory(item: remoteFolderItem, to: localDirDest)
+        let folderDownloadSuccess = !vm.isTransferring && FileManager.default.fileExists(atPath: localDirDest.path)
+        assertTrue(folderDownloadSuccess, "Recursive folder download created directory on macOS.")
+        let pullDirCall = runner.recordedCalls().last { $0.contains("pull") && $0.contains("/sdcard/Download") }
+        assertTrue(pullDirCall != nil, "ADB pull invoked with remote directory path.")
+        assertEqual(pullDirCall?[1], physicalSerial, "Directory pull targets physical device serial.")
+        
+        // Test 4: Staged export for Drag & Drop to Finder (Android -> Mac)
+        let itemsToExport = [
+            StorageItem(id: "welcome.txt", name: "welcome.txt", path: "/sdcard/Download/welcome.txt", size: 40, modifiedDate: Date(), isDirectory: false),
+            remoteFolderItem
+        ]
+        let stagedURLs = try await vm.stageItemsForExport(itemsToExport)
+        assertEqual(stagedURLs.count, 2, "Staging export created local representations for all items.")
+        assertTrue(stagedURLs.allSatisfy { FileManager.default.fileExists(atPath: $0.path) }, "All staged files and folders exist on local macOS disk.")
+        
+        // Test 5: Incomplete / cancelled staging cleanup
+        runner.setSimulatedPullError("adb: error: device disconnected")
+        do {
+            _ = try await vm.stageItemsForExport(itemsToExport)
+            assertTrue(false, "Staging with failure should throw.")
+        } catch {
+            assertTrue(true, "Staging with failure throws error and safely cleans up partial files.")
+        }
+        runner.setSimulatedPullError(nil)
+        
+        // Test 6: Drop provider rejection of unsupported / non-file items
+        let unsupportedProvider = NSItemProvider(item: "Plain text string" as NSString, typeIdentifier: UTType.plainText.identifier)
+        let handledUnsupported = await vm.handleDrop(providers: [unsupportedProvider])
+        assertEqual(handledUnsupported, false, "Drop handler rejects unsupported non-file items.")
+        assertTrue(vm.lastError?.contains("Unsupported") == true, "Reports clear error for unsupported drop.")
+        
+        // Clean up
+        try? FileManager.default.removeItem(at: file1)
+        try? FileManager.default.removeItem(at: file2)
+        try? FileManager.default.removeItem(at: folderToUpload)
+        try? FileManager.default.removeItem(at: localDirDest)
+        for staged in stagedURLs {
+            try? FileManager.default.removeItem(at: staged.deletingLastPathComponent())
+        }
+    }
+
+    func runClipboardAndSelectionTests() async throws {
+        printHeader("M2.2: Native macOS Clipboard (Copy/Cut/Paste) & File Selection")
+        
+        let runner = MockADBCommandRunner()
+        let physicalSerial = "AE9PH68T4DV86L9P"
+        let desc = DeviceDescriptor(
+            id: physicalSerial,
+            name: "RMX3092 (\(physicalSerial))",
+            model: "RMX3092",
+            connectionType: .usbADB,
+            isSimulated: false,
+            status: .available
+        )
+        runner.setSimulatedDevicesOutput("""
+        List of devices attached
+        \(physicalSerial)       device usb:1-1 product:RMX3092 model:RMX3092
+        """)
+        
+        let connMgr = ConnectionManager(adbRunner: runner)
+        let vm = AppViewModel(connectionManager: connMgr)
+        await vm.connectToDevice(desc)
+        
+        // Seed mock storage items in view model
+        let item1 = StorageItem(id: "doc1.pdf", name: "doc1.pdf", path: "/sdcard/Download/doc1.pdf", size: 100, modifiedDate: Date(), isDirectory: false)
+        let item2 = StorageItem(id: "photo.jpg", name: "photo.jpg", path: "/sdcard/Download/photo.jpg", size: 200, modifiedDate: Date(), isDirectory: false)
+        let item3 = StorageItem(id: "Music", name: "Music", path: "/sdcard/Download/Music", size: 0, modifiedDate: Date(), isDirectory: true)
+        runner.setMockStorageFile(path: item1.path, data: "Doc1 Content".data(using: .utf8)!)
+        runner.setMockStorageFile(path: item2.path, data: "Photo Content".data(using: .utf8)!)
+        vm.storageItems = [item1, item2, item3]
+        vm.currentPath = "/sdcard/Download"
+        
+        // Test 1: Single, multi, range, and select all
+        vm.selectItem(item1)
+        assertEqual(vm.selectedItemIDs, [item1.id], "Single selection selects 1 item.")
+        
+        vm.selectItem(item2, multiSelect: true)
+        assertEqual(vm.selectedItemIDs.count, 2, "Cmd+click adds to selection.")
+        
+        vm.selectAll()
+        assertEqual(vm.selectedItemIDs.count, 3, "Cmd+A selects all items in directory.")
+        
+        vm.clearSelection()
+        assertTrue(vm.selectedItemIDs.isEmpty, "Clear selection removes all selections.")
+        
+        // Test 2: Copy selection (Cmd+C) -> Paste (Cmd+V) within Android
+        vm.selectItem(item1)
+        vm.copySelection()
+        assertEqual(vm.clipboardPayload?.operation, .copy, "Copy selection sets clipboard operation to .copy.")
+        assertEqual(vm.clipboardPayload?.items.first?.name, "doc1.pdf", "Clipboard item matches selected item.")
+        
+        let pboardData = NSPasteboard.general.data(forType: NSPasteboard.PasteboardType(AndroidClipboardPayload.pasteboardTypeString))
+        assertTrue(pboardData != nil, "Android clipboard payload registered on system pasteboard.")
+        
+        // Paste into a different directory
+        vm.currentPath = "/sdcard/DCIM"
+        await vm.paste()
+        let cpCall = runner.recordedCalls().last { $0.contains("cp") }
+        assertTrue(cpCall != nil, "ADB cp command invoked for internal copy paste.")
+        assertEqual(cpCall?[1], physicalSerial, "Internal copy targets physical device serial.")
+        
+        // Test 3: Cut selection (Cmd+X) -> Paste (Cmd+V) within Android (Move)
+        vm.currentPath = "/sdcard/Download"
+        vm.selectItem(item2)
+        vm.cutSelection()
+        assertEqual(vm.clipboardPayload?.operation, .cut, "Cut selection sets clipboard operation to .cut.")
+        
+        vm.currentPath = "/sdcard/Documents"
+        await vm.paste()
+        let mvCall = runner.recordedCalls().last { $0.contains("mv") }
+        assertTrue(mvCall != nil, "ADB mv command invoked for internal cut paste.")
+        assertEqual(mvCall?[1], physicalSerial, "Internal move targets physical device serial.")
+        assertTrue(vm.clipboardPayload == nil, "Clipboard payload cleared after successful cut paste.")
+        
+        // Test 4: Safe move operation with fallback (never delete source until dest verified)
+        let fs = ADBFileSystem(serial: physicalSerial, runner: runner)
+        runner.setMockStorageFile(path: "/sdcard/safe_src.txt", data: "Safe Content".data(using: .utf8)!)
+        let moved = try await fs.moveItem(from: "/sdcard/safe_src.txt", to: "/sdcard/safe_dest.txt")
+        assertEqual(moved.name, "safe_dest.txt", "Safe move returned verified destination item.")
+        
+        // Test 5: Mac Finder -> DroidBridge Paste (Cmd+V)
+        let tempDir = FileManager.default.temporaryDirectory
+        let finderFile = tempDir.appendingPathComponent("finder_copied_file.txt")
+        try "Finder Content".data(using: .utf8)?.write(to: finderFile)
+        
+        // Clear android payload and put local file URL on pasteboard
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([finderFile as NSURL])
+        vm.clipboardPayload = nil
+        vm.currentPath = "/sdcard/Download"
+        
+        await vm.paste()
+        let finderPushCall = runner.recordedCalls().last { $0.contains("push") && $0.contains(finderFile.path) }
+        assertTrue(finderPushCall != nil, "Pasting Mac file URLs from Finder uploads to Android storage.")
+        
+        // Test 6: Duplicate filename conflict handling
+        vm.conflictResolution = .renameWithTimestamp
+        let dupFile = tempDir.appendingPathComponent("welcome.txt")
+        try "Duplicate Content".data(using: .utf8)?.write(to: dupFile)
+        await vm.upload(localURL: dupFile)
+        assertTrue(vm.statusMessage.contains("Uploaded"), "Conflict resolution with timestamp completes upload safely without overwriting.")
+        
+        // Test 7: Item deletion
+        vm.storageItems = [item1, item2]
+        vm.selectItem(item1)
+        await vm.deleteSelectedItems()
+        let rmCall = runner.recordedCalls().last { $0.contains("rm") }
+        assertTrue(rmCall != nil, "Delete selected items invokes ADB rm.")
+        
+        // Test 8: Rename item
+        runner.setMockStorageFile(path: item2.path, data: "Photo Content".data(using: .utf8)!)
+        await vm.renameItem(item2, to: "renamed_photo.jpg")
+        let renameMv = runner.recordedCalls().last { call in
+            call.contains("mv") && call.contains { $0.contains("renamed_photo.jpg") }
+        }
+        assertTrue(renameMv != nil, "Rename item invokes ADB mv.")
+        
+        // Clean up
+        try? FileManager.default.removeItem(at: finderFile)
+        try? FileManager.default.removeItem(at: dupFile)
+    }
+
+    // MARK: - Milestone 2.2.1 Regression & Gesture Separation Suite
+
+    func runFolderNavigationAndGestureTests() async throws {
+        printHeader("M2.2.1: Folder Navigation & Double-Click Gesture Separation")
+        
+        let physicalSerial = "AE9PH68T4DV86L9P"
+        let runner = MockADBCommandRunner()
+        
+        runner.setSimulatedDevicesOutput("""
+        List of devices attached
+        \(physicalSerial)       device usb:1-1 product:RMX3092 model:RMX3092
+        """)
+        
+        // Seed directory structure:
+        // /sdcard -> Download, DCIM
+        // /sdcard/Download -> subfolder, file.txt
+        // /sdcard/Download/subfolder -> deep.txt
+        runner.setSimulatedLsOutput(path: "/sdcard", output: """
+        drwxrwx--x 4 root sdcard_rw 4096 2026-10-31 00:00 Download/
+        drwxrwx--x 4 root sdcard_rw 4096 2026-10-31 00:00 DCIM/
+        """)
+        
+        runner.setSimulatedLsOutput(path: "/sdcard/Download", output: """
+        drwxrwx--x 2 root sdcard_rw 4096 2026-10-31 00:00 subfolder/
+        -rw-rw---- 1 root sdcard_rw 1024 2026-10-31 00:00 file.txt
+        """)
+        
+        runner.setSimulatedLsOutput(path: "/sdcard/Download/subfolder", output: """
+        -rw-rw---- 1 root sdcard_rw 2048 2026-10-31 00:00 deep.txt
+        """)
+        
+        let desc = DeviceDescriptor(
+            id: physicalSerial,
+            name: "RMX3092 (\(physicalSerial))",
+            model: "RMX3092",
+            connectionType: .usbADB,
+            isSimulated: false
+        )
+        
+        let connMgr = ConnectionManager(adbRunner: runner)
+        let vm = AppViewModel(connectionManager: connMgr)
+        await vm.connectToDevice(desc)
+        assertEqual(vm.currentPath, "/sdcard", "Initial current path is /sdcard.")
+        
+        let downloadFolder = vm.storageItems.first { $0.name == "Download" }
+        assertTrue(downloadFolder != nil, "Download folder found in /sdcard.")
+        guard let downloadFolder = downloadFolder else { return }
+        
+        // 1. Single-click selects a folder without opening it
+        vm.handleItemClick(downloadFolder)
+        assertEqual(vm.selectedItemIDs, [downloadFolder.id], "Single-click selects the folder.")
+        assertEqual(vm.currentPath, "/sdcard", "Single-click does NOT navigate into the folder.")
+        
+        // 2. Double-click opens a folder
+        await vm.handleItemDoubleClick(downloadFolder)
+        assertEqual(vm.currentPath, "/sdcard/Download", "Double-click navigates into the folder.")
+        assertTrue(vm.storageItems.contains { $0.name == "subfolder" }, "Navigated folder contents displayed.")
+        assertTrue(vm.selectedItemIDs.isEmpty, "Selection cleared on directory navigation.")
+        
+        // 3. Double-click parent navigates up
+        assertTrue(vm.canNavigateUp, "canNavigateUp is true when in /sdcard/Download.")
+        let parentItem = vm.parentDirectoryItem
+        assertTrue(parentItem != nil, "Parent directory entry exists when canNavigateUp is true.")
+        assertEqual(parentItem?.name, "..", "Parent directory entry is named '..'.")
+        
+        if let parentItem = parentItem {
+            await vm.handleItemDoubleClick(parentItem)
+        }
+        assertEqual(vm.currentPath, "/sdcard", "Double-clicking parent navigates back up to /sdcard.")
+        assertTrue(vm.storageItems.contains { $0.name == "Download" }, "Parent directory contents refreshed.")
+        
+        // Navigate back into Download for subsequent tests
+        await vm.handleItemDoubleClick(downloadFolder)
+        assertEqual(vm.currentPath, "/sdcard/Download", "Re-navigated to /sdcard/Download.")
+        
+        let subfolder = vm.storageItems.first { $0.name == "subfolder" }
+        let fileItem = vm.storageItems.first { $0.name == "file.txt" }
+        guard let subfolder = subfolder, let fileItem = fileItem else { return }
+        
+        // 4. Dragging a folder does not navigate into it
+        let draggedItems = vm.handleItemDragInitiated(subfolder)
+        assertEqual(draggedItems.count, 1, "Drag initiation returns requested item.")
+        assertEqual(draggedItems.first?.name, "subfolder", "Dragged item matches subfolder.")
+        assertEqual(vm.currentPath, "/sdcard/Download", "Dragging a folder does NOT navigate into it.")
+        
+        // 5. Multi-selection still works
+        vm.handleItemClick(subfolder)
+        vm.handleItemClick(fileItem, multiSelect: true)
+        assertEqual(vm.selectedItemIDs.count, 2, "Cmd+click adds to selection.")
+        assertTrue(vm.selectedItemIDs.contains(subfolder.id), "Selection contains subfolder.")
+        assertTrue(vm.selectedItemIDs.contains(fileItem.id), "Selection contains file.")
+        
+        let multiDragged = vm.handleItemDragInitiated(subfolder)
+        assertEqual(multiDragged.count, 2, "Dragging selected item exports all selected items.")
+        assertEqual(vm.currentPath, "/sdcard/Download", "Dragging multiple items does not change path.")
+        
+        // 6. Clipboard operations still work
+        vm.copySelection()
+        assertEqual(vm.clipboardPayload?.operation, .copy, "Clipboard operation is .copy.")
+        assertEqual(vm.clipboardPayload?.items.count, 2, "Clipboard contains both selected items.")
+        
+        // 7. Navigation works after selecting and deselecting multiple items
+        vm.clearSelection()
+        assertTrue(vm.selectedItemIDs.isEmpty, "Selection cleared via clearSelection().")
+        
+        // Select again, then navigate into subfolder
+        vm.handleItemClick(subfolder)
+        assertEqual(vm.selectedItemIDs.count, 1, "Subfolder selected.")
+        await vm.handleItemDoubleClick(subfolder)
+        assertEqual(vm.currentPath, "/sdcard/Download/subfolder", "Double-click navigates into subfolder.")
+        assertTrue(vm.storageItems.contains { $0.name == "deep.txt" }, "Deep subfolder contents listed.")
+        assertTrue(vm.selectedItemIDs.isEmpty, "Selection cleared after navigation.")
+        
+        // Keyboard navigation: Cmd+Up navigates up
+        await vm.navigateUp()
+        assertEqual(vm.currentPath, "/sdcard/Download", "navigateUp (Cmd+Up) navigates to parent.")
+        
+        // Keyboard navigation: select subfolder, openSelectedFolder (Return / Cmd+Down)
+        let newSubfolder = vm.storageItems.first { $0.name == "subfolder" }
+        if let newSubfolder = newSubfolder {
+            vm.handleItemClick(newSubfolder)
+            await vm.openSelectedFolder()
+            assertEqual(vm.currentPath, "/sdcard/Download/subfolder", "openSelectedFolder navigates into selected folder.")
+        }
+    }
+
+    // MARK: - Milestone 2.2.2 Definitive Navigation & Deselection Suite
+
+    func runDefinitiveNavigationAndDeselectionTests() async throws {
+        printHeader("M2.2.2: Definitive Folder Navigation & Deselection Verification")
+        
+        let physicalSerial = "AE9PH68T4DV86L9P"
+        let runner = MockADBCommandRunner()
+        
+        runner.setSimulatedDevicesOutput("""
+        List of devices attached
+        \(physicalSerial)       device usb:1-1 product:RMX3092 model:RMX3092
+        """)
+        
+        runner.setSimulatedLsOutput(path: "/sdcard", output: """
+        drwxrwx--x 4 root sdcard_rw 4096 2026-10-31 00:00 Download/
+        drwxrwx--x 4 root sdcard_rw 4096 2026-10-31 00:00 DCIM/
+        -rw-rw---- 1 root sdcard_rw 1024 2026-10-31 00:00 notes.txt
+        """)
+        
+        runner.setSimulatedLsOutput(path: "/sdcard/Download", output: """
+        drwxrwx--x 2 root sdcard_rw 4096 2026-10-31 00:00 Invoices/
+        -rw-rw---- 1 root sdcard_rw 512 2026-10-31 00:00 receipt.pdf
+        """)
+        
+        let desc = DeviceDescriptor(
+            id: physicalSerial,
+            name: "RMX3092 (\(physicalSerial))",
+            model: "RMX3092",
+            connectionType: .usbADB,
+            isSimulated: false
+        )
+        
+        let connMgr = ConnectionManager(adbRunner: runner)
+        let vm = AppViewModel(connectionManager: connMgr)
+        await vm.connectToDevice(desc)
+        
+        guard let downloadItem = vm.storageItems.first(where: { $0.name == "Download" }),
+              let dcimItem = vm.storageItems.first(where: { $0.name == "DCIM" }),
+              let notesItem = vm.storageItems.first(where: { $0.name == "notes.txt" }) else {
+            assertTrue(false, "Required test items missing in /sdcard.")
+            return
+        }
+        
+        // 1. Single-click a folder: select it without navigating
+        await vm.handleRowClick(downloadItem)
+        assertEqual(vm.selectedItemIDs, [downloadItem.id], "Single-click selects the folder.")
+        assertEqual(vm.currentPath, "/sdcard", "Path unchanged after single-click.")
+        
+        // 2. Double-click a folder: open it
+        await vm.handleRowClick(downloadItem)
+        assertEqual(vm.currentPath, "/sdcard/Download", "Double-click on folder opens it.")
+        assertTrue(vm.selectedItemIDs.isEmpty, "Selection cleared on directory navigation.")
+        
+        // 3. Double-click parent (..) navigates up
+        guard let parentItem = vm.parentDirectoryItem else {
+            assertTrue(false, "Parent directory item missing in subfolder.")
+            return
+        }
+        await vm.handleRowClick(parentItem)
+        await vm.handleRowClick(parentItem)
+        assertEqual(vm.currentPath, "/sdcard", "Double-click on .. navigates back up to /sdcard.")
+        
+        // 4. Single-click a file: select it
+        await vm.handleRowClick(notesItem)
+        assertEqual(vm.selectedItemIDs, [notesItem.id], "Single-click selects a file.")
+        
+        // 5. Cmd+Click selects an item (adds to selection)
+        await vm.handleRowClick(dcimItem, eventModifiers: [.command])
+        assertEqual(vm.selectedItemIDs, [notesItem.id, dcimItem.id], "Cmd+Click on unselected item adds it to selection.")
+        
+        // 6. Cmd+Click on an already selected item deselects it
+        await vm.handleRowClick(notesItem, eventModifiers: [.command])
+        assertEqual(vm.selectedItemIDs, [dcimItem.id], "Cmd+Click on an already selected item deselects it.")
+        
+        // 7. Clicking an already selected item in a multi-selection keeps it selected (preserves for dragging)
+        await vm.handleRowClick(downloadItem, eventModifiers: [.command])
+        assertEqual(vm.selectedItemIDs, [dcimItem.id, downloadItem.id], "Both DCIM and Download selected.")
+        await vm.handleRowClick(dcimItem)
+        assertEqual(vm.selectedItemIDs, [dcimItem.id, downloadItem.id], "Clicking an already selected item in multi-selection keeps selection intact for dragging.")
+        
+        // 8. Dragging does not navigate into folder
+        let dragged = vm.handleItemDragInitiated(downloadItem)
+        assertEqual(dragged.count, 2, "Dragging returns all selected items.")
+        assertEqual(vm.currentPath, "/sdcard", "Dragging does NOT navigate into folder.")
+        
+        // 9. Clicking blank space clears selection
+        vm.clearSelection()
+        assertTrue(vm.selectedItemIDs.isEmpty, "Clicking blank space clears entire selection.")
+        
+        // 10. Cmd+A selects all selectable items
+        vm.selectAll()
+        assertEqual(vm.selectedItemIDs.count, vm.storageItems.count, "Cmd+A selects all selectable items.")
+        
+        // 11. Clear Selection button / action clears all selected IDs
+        vm.clearSelection()
+        assertTrue(vm.selectedItemIDs.isEmpty, "Clear Selection action clears all selected IDs.")
+        
+        // 12. Escape shortcut clears selection
+        vm.selectAll()
+        assertEqual(vm.selectedItemIDs.count, 3, "All 3 items selected before Escape.")
+        vm.clearSelection()
+        assertTrue(vm.selectedItemIDs.isEmpty, "Escape shortcut clears current selection.")
+        
+        // 13. AppKit UI Window Event Dispatch Test
+        let uiWindow = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        var uiButtonClicked = false
+        let testBtnView = Button(action: {
+            uiButtonClicked = true
+        }) {
+            Text("Simulated Button")
+        }
+        .buttonStyle(.plain)
+        
+        let hostingView = NSHostingView(rootView: testBtnView)
+        uiWindow.contentView = hostingView
+        uiWindow.makeKeyAndOrderFront(nil)
+        hostingView.layoutSubtreeIfNeeded()
+        
+        let centerPt = NSPoint(x: 150, y: 100)
+        let evDown = NSEvent.mouseEvent(with: .leftMouseDown, location: centerPt, modifierFlags: [], timestamp: 1.0, windowNumber: uiWindow.windowNumber, context: nil, eventNumber: 100, clickCount: 1, pressure: 1.0)!
+        let evUp = NSEvent.mouseEvent(with: .leftMouseUp, location: centerPt, modifierFlags: [], timestamp: 1.05, windowNumber: uiWindow.windowNumber, context: nil, eventNumber: 101, clickCount: 1, pressure: 0.0)!
+        
+        uiWindow.sendEvent(evDown)
+        uiWindow.sendEvent(evUp)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        
+        assertTrue(uiButtonClicked, "Synthetic AppKit window event successfully activated plain Button.")
+    }
+
+    // MARK: - Milestone 2.2.3: Restored Drag & Drop, Clipboard & Quick Look Suite
+    
+    func runRestoredDragDropClipboardAndQuickLookTests() async throws {
+        printHeader("M2.2.3: Restored Drag & Drop, Clipboard & Quick Look Verification")
+        
+        let physicalSerial = "AE9PH68T4DV86L9P"
+        let runner = MockADBCommandRunner()
+        runner.setSimulatedDevicesOutput("""
+        List of devices attached
+        \(physicalSerial) device usb:1-1 product:RMX3092 model:RMX3092
+        """)
+        
+        let desc = DeviceDescriptor(
+            id: physicalSerial,
+            name: "RMX3092 (\(physicalSerial))",
+            model: "RMX3092",
+            connectionType: .usbADB,
+            isSimulated: false
+        )
+        
+        let connMgr = ConnectionManager(adbRunner: runner)
+        let vm = AppViewModel(connectionManager: connMgr)
+        await vm.connectToDevice(desc)
+        
+        assertEqual(vm.currentPath, "/sdcard", "Connected and navigated to /sdcard.")
+        assertTrue(vm.storageItems.contains { $0.name == "Download" }, "Root /sdcard contains Download directory.")
+        
+        // Navigate into /sdcard/Download containing real mock files
+        await vm.navigateTo("/sdcard/Download")
+        assertEqual(vm.currentPath, "/sdcard/Download", "Navigated to /sdcard/Download.")
+        assertEqual(vm.storageItems.count, 2, "Download contains 2 files (welcome.txt, Unicode).")
+        
+        // 1. Spacebar Quick Look on File
+        let welcomeItem = vm.storageItems.first { $0.name == "welcome.txt" }!
+        vm.selectItem(welcomeItem)
+        assertEqual(vm.selectedItemIDs.count, 1, "welcome.txt selected.")
+        
+        // Simulate pressing Space
+        await vm.handleSpacebar()
+        assertTrue(QuickLookCoordinator.shared.currentItem != nil, "Spacebar instantiated QuickLook preview item.")
+        assertEqual(QuickLookCoordinator.shared.currentItem?.previewItemTitle, "welcome.txt", "QuickLook preview item title matches selected file.")
+        assertTrue(QuickLookCoordinator.shared.currentItem?.previewItemURL != nil, "QuickLook preview item has valid local staged URL.")
+        assertTrue(FileManager.default.fileExists(atPath: QuickLookCoordinator.shared.currentItem!.previewItemURL!.path), "Staged QuickLook file exists on disk.")
+        
+        // 2. Arrow Key Navigation while Quick Look is Active Updates Preview
+        await vm.selectNextItem()
+        let unicodeItem = vm.storageItems.first { $0.name.contains("Unicode") }!
+        assertEqual(vm.selectedItemIDs, [unicodeItem.id], "Down arrow navigated selection to Unicode file.")
+        
+        // 3. Escape closes Quick Look
+        vm.handleEscape()
+        assertTrue(QuickLookCoordinator.shared.currentItem == nil, "Escape closed QuickLook panel.")
+        
+        // 4. Return Key on file opens Quick Look
+        await vm.openSelectedFolderOrPreview()
+        assertEqual(QuickLookCoordinator.shared.currentItem?.previewItemTitle, unicodeItem.name, "Return key on selected file opened Quick Look preview.")
+        vm.closeQuickLook()
+        
+        // 5. Up arrow with Cmd navigates up to parent
+        await vm.navigateUp()
+        assertEqual(vm.currentPath, "/sdcard", "Cmd+Up navigated back to parent /sdcard.")
+        
+        // 6. Return Key on directory navigates into folder
+        let downloadItem = vm.storageItems.first { $0.name == "Download" }!
+        vm.selectItem(downloadItem)
+        await vm.openSelectedFolderOrPreview()
+        assertEqual(vm.currentPath, "/sdcard/Download", "Return key on selected directory navigated into folder.")
+        
+        // 7. Drag-Out ItemProvider registers UTType.fileURL for Finder
+        let fileToDrag = vm.storageItems.first { $0.name == "welcome.txt" }!
+        let provider = NSItemProvider()
+        provider.suggestedName = fileToDrag.name
+        provider.registerFileRepresentation(forTypeIdentifier: UTType.fileURL.identifier, fileOptions: [], visibility: .all) { completion in
+            Task {
+                do {
+                    let staged = try await vm.stageItemsForExport([fileToDrag])
+                    completion(staged.first, true, nil)
+                } catch {
+                    completion(nil, false, error)
+                }
+            }
+            return Progress()
+        }
+        assertTrue(provider.registeredTypeIdentifiers.contains(UTType.fileURL.identifier), "Drag-out item provider registers public.file-url for Finder.")
+        
+        // 8. Resilient Drop-In Parsing: Data with CRLF
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("m223_test_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let localFile = tempDir.appendingPathComponent("crlf_dropped.txt")
+        try "CRLF content".data(using: .utf8)?.write(to: localFile)
+        
+        let dropProvider = NSItemProvider()
+        let crlfURLString = "\(localFile.absoluteString)\r\n"
+        dropProvider.registerDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier, visibility: .all) { completion in
+            completion(crlfURLString.data(using: .utf8), nil)
+            return Progress()
+        }
+        
+        let dropSuccess = await vm.handleDrop(providers: [dropProvider])
+        assertTrue(dropSuccess, "Drop handler successfully decoded file URL with trailing CRLF.")
+        let lastPush = runner.recordedCalls().last { $0.contains("push") }
+        assertTrue(lastPush != nil, "ADB push called for dropped file.")
+        
+        // 9. Clipboard Mac Finder Interop: Copy Selection
+        vm.selectItem(fileToDrag)
+        await vm.copySelectionAndStageForFinder()
+        assertEqual(vm.clipboardPayload?.operation, .copy, "Clipboard operation is .copy.")
+        let pboard = NSPasteboard.general
+        let readURLs = pboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]
+        assertTrue(readURLs != nil && !readURLs!.isEmpty, "Copied selection registered file URLs on pasteboard for Finder paste.")
+        
+        // 10. Quick Look Cache Cleanup
+        vm.clearQuickLookCache()
+        let cacheDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("droidbridge_quicklook_cache")
+        let cacheFiles = (try? FileManager.default.contentsOfDirectory(atPath: cacheDir.path)) ?? []
+        assertTrue(cacheFiles.isEmpty, "clearQuickLookCache cleaned up temporary preview files.")
+    }
+
+    // MARK: - Milestone 2.2.4: Definitive Drag-and-Drop, Same-Location Protection & Media Preview Suite
+
+    func runMilestone224DefinitiveDragDropClipboardAndMediaTests() async throws {
+        printHeader("M2.2.4: Same-Location Protection, Multi-Drag, Media Preview & Clipboard Repair")
+        
+        // 1. Path Normalization & Same-Location Logic Tests
+        let norm1 = AppViewModel.normalizePath("/sdcard/Download/")
+        assertEqual(norm1, "/sdcard/Download", "normalizePath strips trailing slash.")
+        
+        let norm2 = AppViewModel.normalizePath("/storage/emulated/0/DCIM//subfolder/")
+        assertEqual(norm2, "/sdcard/DCIM/subfolder", "normalizePath canonicalizes /storage/emulated/0 to /sdcard and resolves double slashes.")
+        
+        let norm3 = AppViewModel.normalizePath("/storage/self/primary/Music")
+        assertEqual(norm3, "/sdcard/Music", "normalizePath canonicalizes /storage/self/primary to /sdcard.")
+        
+        let same1 = AppViewModel.isSameLocation(sourceRemotePath: "/sdcard/Download/file.txt", targetDirectory: "/sdcard/Download", itemName: "file.txt")
+        assertTrue(same1, "isSameLocation identifies identical paths.")
+        
+        let same2 = AppViewModel.isSameLocation(sourceRemotePath: "/storage/emulated/0/Download/file.txt", targetDirectory: "/sdcard/Download/", itemName: "file.txt")
+        assertTrue(same2, "isSameLocation identifies symlink variants as same location.")
+        
+        let diff1 = AppViewModel.isSameLocation(sourceRemotePath: "/sdcard/Download/file.txt", targetDirectory: "/sdcard/DCIM", itemName: "file.txt")
+        assertTrue(!diff1, "isSameLocation returns false for different directories.")
+        
+        // Setup VM and Mock Runner
+        let serial = "TEST-M224-DEV"
+        let runner = MockADBCommandRunner()
+        runner.setSimulatedDevicesOutput("List of devices attached\n\(serial) device usb:1-1 product:RMX3092 model:RMX3092")
+        
+        // Seed extra media files in mock runner
+        runner.setSimulatedLsOutput(path: "/sdcard/Download", output: """
+        -rw-rw---- 1 root sdcard_rw 1024 2026-10-29 18:01 welcome.txt
+        -rw-rw---- 1 root sdcard_rw 2048 2026-10-29 18:02 Unicode 测试 🚀.pdf
+        -rw-rw---- 1 root sdcard_rw 512000 2026-10-29 18:03 sample_song.mp3
+        -rw-rw---- 1 root sdcard_rw 1048576 2026-10-29 18:04 sample_video.mp4
+        """)
+        runner.setMockStorageFile(path: "/sdcard/Download/sample_song.mp3", data: Data(repeating: 0x41, count: 512))
+        runner.setMockStorageFile(path: "/sdcard/Download/sample_video.mp4", data: Data(repeating: 0x56, count: 1024))
+        
+        let connMgr = ConnectionManager(adbRunner: runner)
+        let vm = AppViewModel(connectionManager: connMgr)
+        
+        let desc = DeviceDescriptor(id: serial, name: "Realme RMX3092", model: "RMX3092", connectionType: .usbADB, isSimulated: false)
+        await vm.connectToDevice(desc)
+        await vm.navigateTo("/sdcard/Download")
+        assertEqual(vm.currentPath, "/sdcard/Download", "Connected and in /sdcard/Download.")
+        
+        // 2. Same-Location Drop Protection (Zero ADB Calls)
+        let welcomeItem = vm.storageItems.first { $0.name == "welcome.txt" }!
+        let initialCallCount = runner.recordedCalls().count
+        
+        _ = vm.handleItemDragInitiated(welcomeItem)
+        assertTrue(vm.activeDragContext != nil, "Drag initiation recorded activeDragContext.")
+        assertEqual(vm.activeDragContext?.sourceDirectory, "/sdcard/Download", "Drag context records correct source directory.")
+        
+        // Create drop provider representing the drag
+        let dummyDropProvider = NSItemProvider()
+        let sameLocationDropResult = await vm.handleDrop(providers: [dummyDropProvider])
+        assertTrue(sameLocationDropResult, "Same-location drop handled successfully.")
+        assertTrue(vm.statusMessage.contains("already in this location"), "Status confirms same-location no-op without false transfer.")
+        
+        let afterDropCalls = runner.recordedCalls()
+        let pushCalls = afterDropCalls[initialCallCount...].filter { $0.contains("push") }
+        assertEqual(pushCalls.count, 0, "Same-location drop issued ZERO adb push calls.")
+        
+        // 3. Same-Location Paste Protection (Zero Filesystem Operations)
+        vm.selectItem(welcomeItem)
+        vm.copySelection()
+        let prePasteCallCount = runner.recordedCalls().count
+        await vm.paste()
+        assertTrue(vm.statusMessage.contains("same location"), "Pasting into same folder reports no-op: '\(vm.statusMessage)'")
+        let afterPasteCalls = runner.recordedCalls()[prePasteCallCount...]
+        let cpOrMvCalls = afterPasteCalls.filter { $0.contains("cp") || $0.contains("mv") }
+        assertEqual(cpOrMvCalls.count, 0, "Same-location paste issued ZERO cp or mv calls.")
+        
+        // 4. Multi-Item Drag Export Staging
+        let unicodeItem = vm.storageItems.first { $0.name.contains("Unicode") }!
+        vm.selectItem(welcomeItem)
+        vm.selectItem(unicodeItem, multiSelect: true)
+        assertEqual(vm.selectedItems.count, 2, "Both welcome.txt and Unicode item selected.")
+        
+        let stagedURLs = try await vm.stageItemsForExport(vm.selectedItems)
+        assertEqual(stagedURLs.count, 2, "Multi-item staging exported both items.")
+        assertTrue(FileManager.default.fileExists(atPath: stagedURLs[0].path), "First staged file exists on disk.")
+        assertTrue(FileManager.default.fileExists(atPath: stagedURLs[1].path), "Second staged file exists on disk.")
+        
+        // 5. Media File Classification
+        let audioItem = vm.storageItems.first { $0.name == "sample_song.mp3" }!
+        let videoItem = vm.storageItems.first { $0.name == "sample_video.mp4" }!
+        assertEqual(audioItem.mediaType, .audio, ".mp3 classified as .audio.")
+        assertTrue(audioItem.isMedia, ".mp3 isMedia is true.")
+        assertEqual(videoItem.mediaType, .video, ".mp4 classified as .video.")
+        assertTrue(videoItem.isMedia, ".mp4 isMedia is true.")
+        assertEqual(welcomeItem.mediaType, .none, ".txt mediaType is .none.")
+        assertTrue(!welcomeItem.isMedia, ".txt isMedia is false.")
+        
+        // 6. MediaPreviewModel Lifecycle
+        let testMediaURL = stagedURLs[0]
+        let mediaModel = MediaPreviewModel()
+        mediaModel.loadMedia(url: testMediaURL, title: "Test Audio", type: .audio)
+        assertEqual(mediaModel.title, "Test Audio", "MediaPreviewModel loaded correct title.")
+        assertEqual(mediaModel.mediaType, .audio, "MediaPreviewModel loaded correct mediaType.")
+        assertTrue(mediaModel.player != nil, "AVPlayer instantiated.")
+        mediaModel.play()
+        assertTrue(mediaModel.isPlaying, "MediaPreviewModel reported isPlaying after play().")
+        mediaModel.pause()
+        assertTrue(!mediaModel.isPlaying, "MediaPreviewModel reported paused after pause().")
+        mediaModel.seek(to: 2.5)
+        assertEqual(mediaModel.currentTime, 2.5, "MediaPreviewModel sought to target time.")
+        mediaModel.cleanup()
+        assertTrue(mediaModel.player == nil, "MediaPreviewModel cleared AVPlayer on cleanup.")
+        
+        // 7. Spacebar Unified Preview Routing
+        // Non-media file -> Quick Look
+        vm.clearSelection()
+        vm.selectItem(welcomeItem)
+        await vm.handleSpacebar()
+        assertTrue(vm.isQuickLookVisible, "Spacebar on text file opens Quick Look.")
+        assertTrue(!vm.showingMediaPreview, "Spacebar on text file does NOT open MediaPreview.")
+        await vm.handleSpacebar()
+        assertTrue(!vm.isQuickLookVisible, "Second Spacebar closes Quick Look.")
+        
+        // Media file -> MediaPreviewSheet
+        vm.clearSelection()
+        vm.selectItem(audioItem)
+        await vm.handleSpacebar()
+        assertTrue(vm.showingMediaPreview, "Spacebar on audio file opens MediaPreview.")
+        assertEqual(vm.activeMediaItem?.name, "sample_song.mp3", "Media preview active item matches selection.")
+        vm.handleEscape()
+        assertTrue(!vm.showingMediaPreview, "Escape closes MediaPreview.")
+        
+        // 8. Cross-App Clipboard Pasteboard Tracking
+        vm.clearSelection()
+        vm.selectItem(welcomeItem)
+        vm.copySelection()
+        let initialChangeCount = vm.lastCopyPasteboardChangeCount
+        assertTrue(initialChangeCount > 0, "copySelection() tracked pasteboard change count.")
+        
+        // Simulate external app write to NSPasteboard (incrementing changeCount)
+        let testExternalURL = stagedURLs[0]
+        let pboard = NSPasteboard.general
+        pboard.clearContents()
+        pboard.writeObjects([testExternalURL as NSURL])
+        let externalChangeCount = pboard.changeCount
+        assertTrue(externalChangeCount != initialChangeCount, "External pasteboard operation changed changeCount.")
+        
+        // Pasting should now process the new file URL from Finder rather than internal stale item
+        let preExternalPasteCount = runner.recordedCalls().count
+        await vm.paste()
+        let postExternalPasteCalls = runner.recordedCalls()[preExternalPasteCount...]
+        let externalPushCall = postExternalPasteCalls.first { $0.contains("push") }
+        assertTrue(externalPushCall != nil, "paste() uploaded external Finder pasteboard item successfully.")
+        
+        // 9. Device Disconnect Graceful Recovery
+        runner.setSimulateDisconnect(true)
+        await vm.openMediaPreview(for: videoItem)
+        assertTrue(!vm.isTransferring, "Device disconnect during media load did not leave VM in transferring state.")
+        assertTrue(vm.lastError != nil, "Error recorded on device disconnect.")
+        
+        // 10. Cache Cleanup Verification
+        vm.clearQuickLookCache()
+        let mediaCacheDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("droidbridge_media_cache")
+        let remainingMedia = (try? FileManager.default.contentsOfDirectory(atPath: mediaCacheDir.path)) ?? []
+        assertTrue(remainingMedia.isEmpty, "clearQuickLookCache wiped media cache directory.")
+    }
+
+    // MARK: - Milestone 2.2.5: Runtime Reliability Audit & End-to-End Repair Suite
+
+    func runMilestone225RuntimeReliabilityTests() async throws {
+        printHeader("M2.2.5: Runtime Reliability Audit & End-to-End Repair")
+        
+        // 1. Shell Escaping Logic
+        let cleanPath = ADBFileSystem.escapeForShell("/sdcard/Download")
+        assertEqual(cleanPath, "/sdcard/Download", "Clean paths remain unquoted for backward compatibility.")
+        
+        let spacedPath = ADBFileSystem.escapeForShell("/sdcard/Download/Ae Ajnabee  Coke Studio Bharat - Aditya Rikhari.mp3")
+        assertTrue(spacedPath.hasPrefix("'") && spacedPath.hasSuffix("'"), "Spaced path is wrapped in single quotes.")
+        
+        let parenPath = ADBFileSystem.escapeForShell("/sdcard/Download/NOC26CS150S662000498 (1).pdf")
+        assertTrue(parenPath.hasPrefix("'") && parenPath.hasSuffix("'"), "Path with parentheses is wrapped in single quotes.")
+        
+        let quotePath = ADBFileSystem.escapeForShell("/sdcard/Download/It's a test.mp3")
+        assertTrue(quotePath.contains("'\\''"), "Single quotes inside path are properly escaped.")
+        
+        // 2. Whitespace-Preserving ls Line Parser
+        let lineSpaced = "-rw-rw---- 1 root everybody 10387430 2026-08-28 20:20 Ae Ajnabee  Coke Studio Bharat - Aditya Rikhari.mp3"
+        let parsedSpaced = ADBFileSystem.parseLsLine(lineSpaced)
+        assertTrue(parsedSpaced != nil, "parseLsLine successfully parsed ISO timestamp line.")
+        assertEqual(parsedSpaced?.size, 10387430, "Parsed file size matches exactly.")
+        assertEqual(parsedSpaced?.rawName, "Ae Ajnabee  Coke Studio Bharat - Aditya Rikhari.mp3", "Multiple consecutive spaces in filename preserved exactly.")
+        
+        let lineBsd = "-rw-r--r-- 1 root sdcard_rw 1234 Oct 30 01:21 file with  spaces.txt"
+        let parsedBsd = ADBFileSystem.parseLsLine(lineBsd)
+        assertTrue(parsedBsd != nil, "parseLsLine successfully parsed BSD timestamp line.")
+        assertEqual(parsedBsd?.rawName, "file with  spaces.txt", "BSD filename spaces preserved.")
+        
+        let lineSymlink = "lrw-r--r-- 1 root root 21 2024-02-18 17:17 /sdcard -> /storage/self/primary"
+        let parsedSymlink = ADBFileSystem.parseLsLine(lineSymlink)
+        assertTrue(parsedSymlink != nil, "parseLsLine successfully parsed symlink line.")
+        assertEqual(parsedSymlink?.rawName, "/sdcard", "Symlink arrow target stripped from rawName.")
+        
+        // 3. Spaced Item Filesystem Operations in Mock Transport
+        let runner = MockADBCommandRunner()
+        let desc = DeviceDescriptor(
+            id: "RFCW10ABCDE",
+            name: "Mock Test Device",
+            model: "Pixel 7",
+            connectionType: .usbADB,
+            status: .available
+        )
+        let transport = ADBDeviceTransport(descriptor: desc, runner: runner)
+        try await transport.connect()
+        
+        let fs = transport.fileSystem
+        let spacedFile = "/sdcard/Download/Spaced  Test  File.txt"
+        runner.setSimulatedLsOutput(path: "/sdcard/Download", output: """
+        -rw-rw---- 1 root sdcard_rw 512 2026-10-31 01:00 welcome.txt
+        -rw-rw---- 1 root sdcard_rw 1024 2026-10-31 01:05 Spaced  Test  File.txt
+        drwxrwx--x 2 root sdcard_rw 4096 2026-10-31 01:10 Folder With Spaces/
+        """)
+        runner.setSimulatedLsOutput(path: "/sdcard/Download/Folder With Spaces", output: "")
+        runner.setMockStorageFile(path: spacedFile, data: "Payload with spaces".data(using: .utf8)!)
+        
+        let items = try await fs.listDirectory(at: "/sdcard/Download")
+        assertTrue(items.contains { $0.name == "Spaced  Test  File.txt" }, "listDirectory found item with multiple spaces.")
+        
+        let statItem = try await fs.getItem(at: spacedFile)
+        assertEqual(statItem.name, "Spaced  Test  File.txt", "getItem resolved item with multiple spaces without not found error.")
+        assertEqual(statItem.size, 19, "getItem accurately reflected file byte size.")
+        
+        let statFolder = try await fs.getItem(at: "/sdcard/Download/Folder With Spaces")
+        assertTrue(statFolder.isDirectory, "getItem resolved directory with spaces without error.")
+        
+        // 4. Staging Fast-Path Cache Reuse
+        let connMgr = ConnectionManager(adbRunner: runner)
+        let vm = AppViewModel(connectionManager: connMgr)
+        await vm.connectToDevice(desc)
+        await vm.navigateTo("/sdcard/Download")
+        
+        let qlCacheDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("droidbridge_quicklook_cache")
+        try FileManager.default.createDirectory(at: qlCacheDir, withIntermediateDirectories: true)
+        let cachedFile = qlCacheDir.appendingPathComponent("Spaced  Test  File.txt")
+        try "Payload with spaces".data(using: .utf8)!.write(to: cachedFile)
+        
+        let preStageCalls = runner.recordedCalls().count
+        let staged = try await vm.stageItemsForExport([statItem])
+        let postStageCalls = runner.recordedCalls()[preStageCalls...]
+        let downloadCalls = postStageCalls.filter { $0.contains("pull") }
+        assertTrue(downloadCalls.isEmpty, "stageItemsForExport reused cached preview without issuing redundant ADB pull.")
+        assertEqual(staged.count, 1, "Staged exactly 1 item.")
+        assertTrue(FileManager.default.fileExists(atPath: staged[0].path), "Staged file exists at destination.")
+        
+        // 5. Global Notification-based Edit Menu Bridging
+        vm.selectItem(statItem)
+        vm.copySelection()
+        assertEqual(vm.clipboardPayload?.operation, .copy, "Direct copy sets clipboard operation to .copy.")
+        
+        vm.cutSelection()
+        assertEqual(vm.clipboardPayload?.operation, .cut, "Direct cut sets clipboard operation to .cut.")
+        
+        vm.selectAll()
+        assertEqual(vm.selectedItemIDs.count, vm.storageItems.count, "selectAll selected all items.")
+        
+        // 6. Media Player Model Readiness
+        let mediaModel = MediaPreviewModel()
+        assertEqual(mediaModel.isPlaying, false, "MediaPreviewModel initially not playing.")
+        
+        // 7. Cache Cleanup
+        vm.clearQuickLookCache()
+    }
+    
+    // MARK: - Suite 25: Narrow Bug Fixes: Same-Location Freeze & Background Shortcut Guard
+    
+    func runNarrowBugFixesTests() async throws {
+        printHeader("Narrow Bug Fixes: Same-Location Drop Freeze & Background Shortcut Protection")
+        
+        let runner = MockADBCommandRunner()
+        let desc = DeviceDescriptor(
+            id: "RFCW10ABCDE",
+            name: "Mock Test Device",
+            model: "Pixel 7",
+            connectionType: .usbADB,
+            status: .available
+        )
+        let connMgr = ConnectionManager(adbRunner: runner)
+        let vm = AppViewModel(connectionManager: connMgr)
+        await vm.connectToDevice(desc)
+        await vm.navigateTo("/sdcard/Download")
+        
+        // 1. Same-location in-app drop resets isDropTargeted and avoids transfer freeze
+        vm.isDropTargeted = true
+        let itemToDrag = vm.storageItems.first { $0.name == "welcome.txt" }!
+        let exported = vm.handleItemDragInitiated(itemToDrag)
+        assertEqual(exported.count, 1, "Drag initiation returned single item.")
+        assertTrue(vm.activeDragContext != nil, "activeDragContext successfully recorded.")
+        assertEqual(vm.isDropTargeted, true, "isDropTargeted initially true during drag over target.")
+        
+        let inAppSuccess = await vm.handleDrop(providers: [])
+        assertTrue(inAppSuccess, "handleDrop with matching activeDragContext succeeded.")
+        assertEqual(vm.isDropTargeted, false, "isDropTargeted automatically reset to false on same-location drop.")
+        assertTrue(vm.activeDragContext == nil, "activeDragContext cleared after same-location drop.")
+        assertEqual(vm.statusMessage, "Item(s) already in this location. No changes made.", "Status confirms same-location no-op without false transfer.")
+        assertEqual(vm.isTransferring, false, "isTransferring remains false after same-location drop.")
+        
+        // 2. Staged export drop back into origin directory resets isDropTargeted and avoids transfer
+        vm.isDropTargeted = true
+        let stagedDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("droidbridge_export_test")
+        try FileManager.default.createDirectory(at: stagedDir, withIntermediateDirectories: true)
+        let stagedFile = stagedDir.appendingPathComponent("welcome.txt")
+        try "dummy".data(using: .utf8)!.write(to: stagedFile)
+        
+        let provider = NSItemProvider(item: stagedFile as NSURL, typeIdentifier: "public.file-url")
+        let stagedSuccess = await vm.handleDrop(providers: [provider])
+        assertTrue(stagedSuccess, "handleDrop of staged origin item succeeded.")
+        assertEqual(vm.isDropTargeted, false, "isDropTargeted cleared to false after staged origin drop.")
+        assertEqual(vm.isTransferring, false, "isTransferring remains false after staged origin drop.")
+        assertEqual(vm.statusMessage, "Item(s) already in this location. No changes made.", "Status confirms staged origin drop no-op.")
+        
+        // 3. Unsupported providers reset isDropTargeted without freeze
+        vm.isDropTargeted = true
+        let unsupportedProvider = NSItemProvider(item: "just text" as NSString, typeIdentifier: "public.text")
+        let unsupportedSuccess = await vm.handleDrop(providers: [unsupportedProvider])
+        assertTrue(!unsupportedSuccess, "handleDrop with unsupported item rejected cleanly.")
+        assertEqual(vm.isDropTargeted, false, "isDropTargeted cleared to false even when drop is unsupported.")
+        
+        // 4. Keyboard Shortcut Window/App Focus Filtering
+        // When app is in background or window is not key, key events must not be handled
+        func simulateShouldHandleKeyEvent(
+            appIsActive: Bool,
+            windowIsKey: Bool,
+            hasAttachedSheet: Bool,
+            isTextInput: Bool
+        ) -> Bool {
+            guard appIsActive, windowIsKey, !hasAttachedSheet else { return false }
+            if isTextInput { return false }
+            return true
+        }
+        
+        assertTrue(!simulateShouldHandleKeyEvent(appIsActive: false, windowIsKey: true, hasAttachedSheet: false, isTextInput: false), "Key event rejected when app is inactive in background.")
+        assertTrue(!simulateShouldHandleKeyEvent(appIsActive: true, windowIsKey: false, hasAttachedSheet: false, isTextInput: false), "Key event rejected when window is not key.")
+        assertTrue(!simulateShouldHandleKeyEvent(appIsActive: true, windowIsKey: true, hasAttachedSheet: true, isTextInput: false), "Key event rejected when modal sheet is active.")
+        assertTrue(!simulateShouldHandleKeyEvent(appIsActive: true, windowIsKey: true, hasAttachedSheet: false, isTextInput: true), "Key event rejected when responder is a text input field.")
+        assertTrue(simulateShouldHandleKeyEvent(appIsActive: true, windowIsKey: true, hasAttachedSheet: false, isTextInput: false), "Key event accepted when app is active, window is key, no sheet is open, and not in text input.")
+    }
+
     func executeAll() async -> Bool {
         print("==================================================")
         print(" DroidBridge Milestone 2 Test Harness")
@@ -969,9 +1920,31 @@ final class TestRunner {
             try await runADBTransferAndErrorRecoveryTests()
             try await runADBTimeoutAndCancellationTests()
             
-            // Milestone 2.1 Symlink & Transfer UI Suites
+            // Milestone 2.1 Symlink & Transfer UI Suites (2 Suites, 35 Assertions)
             try await runSymlinkAndNavigationTests()
             try await runTransferUIIntegrationTests()
+            
+            // Milestone 2.2 Drag & Drop, Clipboard & Selection Suites
+            try await runDragAndDropAndFolderTransferTests()
+            try await runClipboardAndSelectionTests()
+            
+            // Milestone 2.2.1 Folder Navigation & Gesture Separation Suite
+            try await runFolderNavigationAndGestureTests()
+            
+            // Milestone 2.2.2 Definitive Navigation & Deselection Suite
+            try await runDefinitiveNavigationAndDeselectionTests()
+            
+            // Milestone 2.2.3 Restored Drag & Drop, Clipboard & Quick Look Suite
+            try await runRestoredDragDropClipboardAndQuickLookTests()
+            
+            // Milestone 2.2.4 Definitive Drag-and-Drop, Same-Location Protection & Media Preview Suite
+            try await runMilestone224DefinitiveDragDropClipboardAndMediaTests()
+            
+            // Milestone 2.2.5 Runtime Reliability Audit & End-to-End Repair Suite
+            try await runMilestone225RuntimeReliabilityTests()
+            
+            // Narrow Bug Fixes Suite: Same-Location Drop Freeze & Background Shortcut Protection
+            try await runNarrowBugFixesTests()
         } catch {
             print("\n❌ FATAL TEST HARNESS ERROR: \(error)")
             return false

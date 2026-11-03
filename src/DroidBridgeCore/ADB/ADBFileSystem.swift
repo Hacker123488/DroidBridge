@@ -33,10 +33,79 @@ public final class ADBFileSystem: DeviceFileSystem, @unchecked Sendable {
         return trimmed
     }
     
+    /// Escapes an argument safely for POSIX shell execution on Android (toybox/toolbox).
+    public static func escapeForShell(_ string: String) -> String {
+        let specialChars = CharacterSet(charactersIn: " \t\n\r'\"()[]{}*?~$\\!;&|<>#^")
+        if string.rangeOfCharacter(from: specialChars) != nil {
+            return "'" + string.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }
+        return string
+    }
+    
+    /// Parses a single line of `ls -la -p` or `ls -ld -p` preserving spaces in filenames.
+    public static func parseLsLine(_ line: String) -> (permissions: String, size: Int64, rawName: String)? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.starts(with: "total ") {
+            return nil
+        }
+        
+        var tokens: [(string: String, range: Range<String.Index>)] = []
+        var searchIndex = trimmed.startIndex
+        
+        while searchIndex < trimmed.endIndex && tokens.count < 8 {
+            while searchIndex < trimmed.endIndex && trimmed[searchIndex].isWhitespace {
+                searchIndex = trimmed.index(after: searchIndex)
+            }
+            if searchIndex >= trimmed.endIndex { break }
+            let tokenStart = searchIndex
+            while searchIndex < trimmed.endIndex && !trimmed[searchIndex].isWhitespace {
+                searchIndex = trimmed.index(after: searchIndex)
+            }
+            let tokenEnd = searchIndex
+            let tokenStr = String(trimmed[tokenStart..<tokenEnd])
+            tokens.append((tokenStr, tokenStart..<tokenEnd))
+        }
+        
+        guard tokens.count >= 7 else { return nil }
+        
+        let permissions = tokens[0].string
+        let size = Int64(tokens[4].string) ?? 0
+        let dateToken = tokens[5].string
+        
+        let filenameStartIndex: String.Index
+        if dateToken.contains("-") {
+            // ISO date: date (token 5), time (token 6) -> name starts after token 6
+            guard tokens.count >= 7 else { return nil }
+            var idx = tokens[6].range.upperBound
+            while idx < trimmed.endIndex && trimmed[idx].isWhitespace {
+                idx = trimmed.index(after: idx)
+            }
+            filenameStartIndex = idx
+        } else {
+            // BSD date: month (token 5), day (token 6), time/year (token 7) -> name starts after token 7
+            guard tokens.count >= 8 else { return nil }
+            var idx = tokens[7].range.upperBound
+            while idx < trimmed.endIndex && trimmed[idx].isWhitespace {
+                idx = trimmed.index(after: idx)
+            }
+            filenameStartIndex = idx
+        }
+        
+        guard filenameStartIndex <= trimmed.endIndex else { return nil }
+        var rawName = String(trimmed[filenameStartIndex...])
+        
+        if let arrowRange = rawName.range(of: " -> ") {
+            rawName = String(rawName[..<arrowRange.lowerBound])
+        }
+        
+        return (permissions, size, rawName)
+    }
+    
     public func listDirectory(at path: String) async throws -> [StorageItem] {
         let validPath = try Self.validateRemotePath(path)
+        let escapedPath = Self.escapeForShell(validPath)
         
-        let result = try await runner.run(arguments: ["-s", serial, "shell", "ls", "-la", "-L", "-p", validPath])
+        let result = try await runner.run(arguments: ["-s", serial, "shell", "ls", "-la", "-L", "-p", escapedPath])
         
         if !result.isSuccess {
             let err = result.stderr.lowercased() + result.stdout.lowercased()
@@ -54,8 +123,9 @@ public final class ADBFileSystem: DeviceFileSystem, @unchecked Sendable {
     
     public func getItem(at path: String) async throws -> StorageItem {
         let validPath = try Self.validateRemotePath(path)
+        let escapedPath = Self.escapeForShell(validPath)
         
-        let result = try await runner.run(arguments: ["-s", serial, "shell", "ls", "-ld", "-L", "-p", validPath])
+        let result = try await runner.run(arguments: ["-s", serial, "shell", "ls", "-ld", "-L", "-p", escapedPath])
         if !result.isSuccess {
             let err = result.stderr.lowercased() + result.stdout.lowercased()
             if err.contains("no such file") || err.contains("not found") {
@@ -68,16 +138,9 @@ public final class ADBFileSystem: DeviceFileSystem, @unchecked Sendable {
         }
         
         let trimmed = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parts = trimmed.split(separator: " ", omittingEmptySubsequences: true)
-        if parts.count >= 8 {
-            let permissions = String(parts[0])
-            let size = Int64(parts[4]) ?? 0
-            let nameParts = parts.dropFirst(7)
-            var rawName = nameParts.joined(separator: " ")
-            if let arrowRange = rawName.range(of: " -> ") {
-                rawName = String(rawName[..<arrowRange.lowerBound])
-            }
-            let isDir = permissions.hasPrefix("d") || rawName.hasSuffix("/")
+        if let parsed = Self.parseLsLine(trimmed) {
+            var rawName = parsed.rawName
+            let isDir = parsed.permissions.hasPrefix("d") || rawName.hasSuffix("/")
             if rawName.hasSuffix("/") {
                 rawName = String(rawName.dropLast())
             }
@@ -86,13 +149,13 @@ public final class ADBFileSystem: DeviceFileSystem, @unchecked Sendable {
                 id: displayName,
                 name: displayName,
                 path: validPath,
-                size: isDir ? 0 : size,
+                size: isDir ? 0 : parsed.size,
                 modifiedDate: Date(),
                 isDirectory: isDir,
                 permissions: StoragePermissions(
-                    canRead: permissions.contains("r"),
-                    canWrite: permissions.contains("w"),
-                    canDelete: permissions.contains("w")
+                    canRead: parsed.permissions.contains("r"),
+                    canWrite: parsed.permissions.contains("w"),
+                    canDelete: parsed.permissions.contains("w")
                 )
             )
         }
@@ -117,7 +180,7 @@ public final class ADBFileSystem: DeviceFileSystem, @unchecked Sendable {
         }
         
         let targetPath = validParent.hasSuffix("/") ? "\(validParent)\(trimmedName)" : "\(validParent)/\(trimmedName)"
-        let result = try await runner.run(arguments: ["-s", serial, "shell", "mkdir", targetPath])
+        let result = try await runner.run(arguments: ["-s", serial, "shell", "mkdir", Self.escapeForShell(targetPath)])
         
         if !result.isSuccess {
             let err = result.stderr.lowercased()
@@ -144,7 +207,7 @@ public final class ADBFileSystem: DeviceFileSystem, @unchecked Sendable {
         let validPath = try Self.validateRemotePath(path)
         
         let rmFlag = isRecursive ? "-rf" : "-d"
-        let result = try await runner.run(arguments: ["-s", serial, "shell", "rm", rmFlag, validPath])
+        let result = try await runner.run(arguments: ["-s", serial, "shell", "rm", rmFlag, Self.escapeForShell(validPath)])
         
         if !result.isSuccess {
             let err = result.stderr.lowercased()
@@ -168,7 +231,7 @@ public final class ADBFileSystem: DeviceFileSystem, @unchecked Sendable {
         let parent = (validPath as NSString).deletingLastPathComponent
         let targetPath = parent.hasSuffix("/") ? "\(parent)\(trimmedName)" : "\(parent)/\(trimmedName)"
         
-        let result = try await runner.run(arguments: ["-s", serial, "shell", "mv", validPath, targetPath])
+        let result = try await runner.run(arguments: ["-s", serial, "shell", "mv", Self.escapeForShell(validPath), Self.escapeForShell(targetPath)])
         if !result.isSuccess {
             let err = result.stderr.lowercased()
             if err.contains("no such file") {
@@ -183,34 +246,74 @@ public final class ADBFileSystem: DeviceFileSystem, @unchecked Sendable {
         return try await getItem(at: targetPath)
     }
     
-    /// Parses `ls -la -p` lines into structured StorageItems.
+    public func moveItem(from sourcePath: String, to destinationPath: String) async throws -> StorageItem {
+        let validSource = try Self.validateRemotePath(sourcePath)
+        let validDest = try Self.validateRemotePath(destinationPath)
+        
+        // Ensure source exists
+        _ = try await getItem(at: validSource)
+        
+        let result = try await runner.run(arguments: ["-s", serial, "shell", "mv", Self.escapeForShell(validSource), Self.escapeForShell(validDest)])
+        if !result.isSuccess {
+            let err = result.stderr.lowercased()
+            if err.contains("no such file") {
+                throw DeviceError.itemNotFound(path: validSource)
+            }
+            if err.contains("file exists") {
+                throw DeviceError.itemAlreadyExists(path: validDest)
+            }
+            
+            // Safe move fallback: copy first, verify destination, and only then delete source
+            let cpResult = try await runner.run(arguments: ["-s", serial, "shell", "cp", "-r", Self.escapeForShell(validSource), Self.escapeForShell(validDest)])
+            guard cpResult.isSuccess else {
+                throw DeviceError.ioError(message: "Failed to move item: \(result.stderr) (copy fallback failed: \(cpResult.stderr))")
+            }
+            
+            // Verify destination exists before removing source
+            let destinationItem = try await getItem(at: validDest)
+            try await deleteItem(at: validSource, isRecursive: true)
+            return destinationItem
+        }
+        
+        return try await getItem(at: validDest)
+    }
+    
+    public func copyItem(from sourcePath: String, to destinationPath: String) async throws -> StorageItem {
+        let validSource = try Self.validateRemotePath(sourcePath)
+        let validDest = try Self.validateRemotePath(destinationPath)
+        
+        // Ensure source exists
+        _ = try await getItem(at: validSource)
+        
+        let result = try await runner.run(arguments: ["-s", serial, "shell", "cp", "-r", Self.escapeForShell(validSource), Self.escapeForShell(validDest)])
+        if !result.isSuccess {
+            let err = result.stderr.lowercased()
+            if err.contains("no such file") {
+                throw DeviceError.itemNotFound(path: validSource)
+            }
+            if err.contains("file exists") {
+                throw DeviceError.itemAlreadyExists(path: validDest)
+            }
+            throw DeviceError.ioError(message: "Failed to copy item: \(result.stderr)")
+        }
+        
+        return try await getItem(at: validDest)
+    }
+    
+    /// Parses `ls -la -p` lines into structured StorageItems preserving filenames with spaces.
     public static func parseLsOutput(_ output: String, parentPath: String) -> [StorageItem] {
         var items: [StorageItem] = []
         let lines = output.components(separatedBy: .newlines)
         
         for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed.starts(with: "total ") {
-                continue
-            }
+            guard let parsed = parseLsLine(line) else { continue }
             
-            let parts = trimmed.split(separator: " ", omittingEmptySubsequences: true)
-            guard parts.count >= 8 else { continue }
-            
-            let permissions = String(parts[0])
-            let size = Int64(parts[4]) ?? 0
-            
-            let nameParts = parts.dropFirst(7)
-            var rawName = nameParts.joined(separator: " ")
-            if let arrowRange = rawName.range(of: " -> ") {
-                rawName = String(rawName[..<arrowRange.lowerBound])
-            }
-            
+            var rawName = parsed.rawName
             if rawName == "./" || rawName == "../" || rawName == "." || rawName == ".." {
                 continue
             }
             
-            let isDir = permissions.hasPrefix("d") || rawName.hasSuffix("/")
+            let isDir = parsed.permissions.hasPrefix("d") || rawName.hasSuffix("/")
             if rawName.hasSuffix("/") {
                 rawName = String(rawName.dropLast())
             }
@@ -221,13 +324,13 @@ public final class ADBFileSystem: DeviceFileSystem, @unchecked Sendable {
                 id: rawName,
                 name: rawName,
                 path: itemPath,
-                size: isDir ? 0 : size,
+                size: isDir ? 0 : parsed.size,
                 modifiedDate: Date(),
                 isDirectory: isDir,
                 permissions: StoragePermissions(
-                    canRead: permissions.contains("r"),
-                    canWrite: permissions.contains("w"),
-                    canDelete: permissions.contains("w")
+                    canRead: parsed.permissions.contains("r"),
+                    canWrite: parsed.permissions.contains("w"),
+                    canDelete: parsed.permissions.contains("w")
                 )
             ))
         }

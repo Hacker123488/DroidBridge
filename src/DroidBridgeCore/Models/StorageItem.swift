@@ -56,4 +56,30 @@ public struct StorageItem: Identifiable, Sendable, Codable, Equatable {
         self.isDirectory = isDirectory
         self.permissions = permissions
     }
+    
+    /// Type of media file (audio, video, or none).
+    public var mediaType: MediaType {
+        guard !isDirectory else { return .none }
+        let ext = (name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "mp3", "m4a", "wav", "aac", "flac", "ogg", "aiff", "alac", "wma":
+            return .audio
+        case "mp4", "mov", "m4v", "mkv", "webm", "avi", "3gp", "wmv", "flv":
+            return .video
+        default:
+            return .none
+        }
+    }
+    
+    /// Indicates whether this item is an audio or video file.
+    public var isMedia: Bool {
+        return mediaType != .none
+    }
+}
+
+/// Category of media file for preview and playback routing.
+public enum MediaType: String, Sendable, Codable {
+    case audio
+    case video
+    case none
 }

@@ -17,4 +17,21 @@ public protocol DeviceFileSystem: Sendable {
     
     /// Renames an existing item.
     func renameItem(at path: String, newName: String) async throws -> StorageItem
+    
+    /// Moves an existing item from source path to destination path.
+    func moveItem(from sourcePath: String, to destinationPath: String) async throws -> StorageItem
+    
+    /// Copies an existing item from source path to destination path.
+    func copyItem(from sourcePath: String, to destinationPath: String) async throws -> StorageItem
+}
+
+public extension DeviceFileSystem {
+    func moveItem(from sourcePath: String, to destinationPath: String) async throws -> StorageItem {
+        let newName = (destinationPath as NSString).lastPathComponent
+        return try await renameItem(at: sourcePath, newName: newName)
+    }
+    
+    func copyItem(from sourcePath: String, to destinationPath: String) async throws -> StorageItem {
+        throw DeviceError.unsupportedOperation("copyItem is not implemented for this transport.")
+    }
 }

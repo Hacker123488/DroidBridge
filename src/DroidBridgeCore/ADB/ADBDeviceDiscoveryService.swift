@@ -98,7 +98,7 @@ public final class ADBDeviceDiscoveryService: DeviceDiscoveryService, @unchecked
                 continue
             }
             
-            let parts = trimmed.split(separator: " ", omittingEmptySubsequences: true)
+            let parts = trimmed.split(whereSeparator: { $0.isWhitespace })
             guard parts.count >= 2 else { continue }
             
             let serial = String(parts[0])

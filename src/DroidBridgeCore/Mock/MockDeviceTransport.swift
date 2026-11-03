@@ -299,6 +299,38 @@ private final class MockFileSystem: DeviceFileSystem, @unchecked Sendable {
             isDirectory: isDir.boolValue
         )
     }
+    
+    func moveItem(from sourcePath: String, to destinationPath: String) async throws -> StorageItem {
+        let srcURL = try resolveLocalURL(for: sourcePath)
+        guard FileManager.default.fileExists(atPath: srcURL.path) else {
+            throw DeviceError.itemNotFound(path: sourcePath)
+        }
+        
+        let dstURL = try resolveLocalURL(for: destinationPath)
+        if FileManager.default.fileExists(atPath: dstURL.path) {
+            throw DeviceError.itemAlreadyExists(path: destinationPath)
+        }
+        
+        try FileManager.default.createDirectory(at: dstURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: srcURL, to: dstURL)
+        return try await getItem(at: destinationPath)
+    }
+    
+    func copyItem(from sourcePath: String, to destinationPath: String) async throws -> StorageItem {
+        let srcURL = try resolveLocalURL(for: sourcePath)
+        guard FileManager.default.fileExists(atPath: srcURL.path) else {
+            throw DeviceError.itemNotFound(path: sourcePath)
+        }
+        
+        let dstURL = try resolveLocalURL(for: destinationPath)
+        if FileManager.default.fileExists(atPath: dstURL.path) {
+            throw DeviceError.itemAlreadyExists(path: destinationPath)
+        }
+        
+        try FileManager.default.createDirectory(at: dstURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: srcURL, to: dstURL)
+        return try await getItem(at: destinationPath)
+    }
 }
 
 // MARK: - Mock TransferService
@@ -320,12 +352,18 @@ private final class MockTransferService: TransferService, @unchecked Sendable {
     ) async throws -> StorageItem {
         try transport?.checkConnection()
         
-        guard FileManager.default.fileExists(atPath: localURL.path) else {
+        var isLocalDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isLocalDir) else {
             throw DeviceError.itemNotFound(path: localURL.path)
         }
         
-        let localValues = try localURL.resourceValues(forKeys: [.fileSizeKey])
-        let fileSize = Int64(localValues.fileSize ?? 0)
+        let fileSize: Int64
+        if isLocalDir.boolValue {
+            fileSize = 0
+        } else {
+            let localValues = try localURL.resourceValues(forKeys: [.fileSizeKey])
+            fileSize = Int64(localValues.fileSize ?? 0)
+        }
         
         var targetFilename = localURL.lastPathComponent
         var targetDirectoryPath = remotePath
@@ -367,6 +405,16 @@ private final class MockTransferService: TransferService, @unchecked Sendable {
                 let newFilename = ext.isEmpty ? "\(base)_\(timestamp)" : "\(base)_\(timestamp).\(ext)"
                 resolvedPath = targetDirectoryPath.hasSuffix("/") ? "\(targetDirectoryPath)\(newFilename)" : "\(targetDirectoryPath)/\(newFilename)"
             }
+        }
+        
+        if isLocalDir.boolValue {
+            try Task.checkCancellation()
+            try transport?.checkConnection()
+            let destURL = fileSystem.rootDirectory.appendingPathComponent(resolvedPath.replacingOccurrences(of: "^/", with: "", options: .regularExpression))
+            try FileManager.default.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: localURL, to: destURL)
+            progress(TransferProgress(bytesTransferred: 1024, totalBytes: 1024, speedBytesPerSec: 10 * 1024 * 1024))
+            return try await fileSystem.getItem(at: resolvedPath)
         }
         
         let data = try Data(contentsOf: localURL)
@@ -456,5 +504,34 @@ private final class MockTransferService: TransferService, @unchecked Sendable {
         
         try FileManager.default.createDirectory(at: localURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: localURL)
+    }
+    
+    func downloadDirectory(
+        remotePath: String,
+        localURL: URL,
+        options: TransferOptions,
+        progress: @Sendable @escaping (TransferProgress) -> Void
+    ) async throws {
+        try transport?.checkConnection()
+        let item = try await fileSystem.getItem(at: remotePath)
+        guard item.isDirectory else {
+            throw DeviceError.invalidPath(path: "downloadDirectory called on non-directory.")
+        }
+        
+        if FileManager.default.fileExists(atPath: localURL.path) {
+            switch options.conflictResolution {
+            case .fail:
+                throw DeviceError.itemAlreadyExists(path: localURL.path)
+            case .overwrite:
+                try? FileManager.default.removeItem(at: localURL)
+            case .renameWithTimestamp:
+                break
+            }
+        }
+        
+        let sourceURL = fileSystem.rootDirectory.appendingPathComponent(remotePath.replacingOccurrences(of: "^/", with: "", options: .regularExpression))
+        try FileManager.default.createDirectory(at: localURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: sourceURL, to: localURL)
+        progress(TransferProgress(bytesTransferred: 1024, totalBytes: 1024, speedBytesPerSec: 10 * 1024 * 1024))
     }
 }

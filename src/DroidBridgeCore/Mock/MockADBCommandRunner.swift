@@ -54,6 +54,14 @@ public final class MockADBCommandRunner: ADBCommandRunner, @unchecked Sendable {
         state.withLock { $0.simulatedPushError = error }
     }
     
+    public func setMockStorageFile(path: String, data: Data) {
+        state.withLock { $0.mockStorageFiles[path] = data }
+    }
+    
+    public func setSimulatedLsOutput(path: String, output: String) {
+        state.withLock { $0.simulatedLsOutputs[path] = output }
+    }
+    
     public func setSimulatedPullError(_ error: String?) {
         state.withLock { $0.simulatedPullError = error }
     }
@@ -79,6 +87,15 @@ public final class MockADBCommandRunner: ADBCommandRunner, @unchecked Sendable {
             throw DeviceError.ioError(message: "adb binary not found")
         }
         return "Android Debug Bridge version 1.0.41\nVersion 35.0.1-11580221\nInstalled as \(adbPath)"
+    }
+    
+    private func unquoteShellArg(_ arg: String) -> String {
+        let trimmed = arg.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("'") && trimmed.hasSuffix("'") && trimmed.count >= 2 {
+            let inner = trimmed.dropFirst().dropLast()
+            return String(inner).replacingOccurrences(of: "'\\''", with: "'")
+        }
+        return trimmed
     }
     
     public func run(arguments: [String], timeout: TimeInterval?) async throws -> ADBCommandResult {
@@ -118,7 +135,7 @@ public final class MockADBCommandRunner: ADBCommandRunner, @unchecked Sendable {
             
             // `adb -s <serial> shell ls ...`
             if command == "shell" && arguments.count >= 4 && arguments[3] == "ls" {
-                let targetPath = arguments.last ?? ""
+                let targetPath = unquoteShellArg(arguments.last ?? "")
                 let isStatMode = arguments.contains("-ld")
                 
                 if isStatMode {
@@ -151,7 +168,7 @@ public final class MockADBCommandRunner: ADBCommandRunner, @unchecked Sendable {
             
             // `adb -s <serial> shell mkdir <path>`
             if command == "shell" && arguments.count >= 4 && arguments[3] == "mkdir" {
-                let dirPath = arguments.last ?? ""
+                let dirPath = unquoteShellArg(arguments.last ?? "")
                 state.withLock { s in
                     let parent = (dirPath as NSString).deletingLastPathComponent
                     let name = (dirPath as NSString).lastPathComponent
@@ -164,7 +181,7 @@ public final class MockADBCommandRunner: ADBCommandRunner, @unchecked Sendable {
             
             // `adb -s <serial> shell rm [-rf/-d] <path>`
             if command == "shell" && arguments.count >= 4 && arguments[3] == "rm" {
-                let target = arguments.last ?? ""
+                let target = unquoteShellArg(arguments.last ?? "")
                 state.withLock { s in
                     s.simulatedLsOutputs.removeValue(forKey: target)
                     s.mockStorageFiles.removeValue(forKey: target)
@@ -174,14 +191,29 @@ public final class MockADBCommandRunner: ADBCommandRunner, @unchecked Sendable {
             
             // `adb -s <serial> shell mv <old> <new>`
             if command == "shell" && arguments.count >= 5 && arguments[3] == "mv" {
-                let old = arguments[4]
-                let new = arguments[5]
+                let old = unquoteShellArg(arguments[4])
+                let new = unquoteShellArg(arguments[5])
                 state.withLock { s in
                     if let content = s.simulatedLsOutputs.removeValue(forKey: old) {
                         s.simulatedLsOutputs[new] = content
                     }
                     if let fileData = s.mockStorageFiles.removeValue(forKey: old) {
                         s.mockStorageFiles[new] = fileData
+                    }
+                }
+                return ADBCommandResult(exitCode: 0, stdout: "", stderr: "")
+            }
+            
+            // `adb -s <serial> shell cp [-r] <source> <dest>`
+            if command == "shell" && arguments.count >= 5 && arguments[3] == "cp" {
+                let src = unquoteShellArg(arguments[arguments.count - 2])
+                let dest = unquoteShellArg(arguments[arguments.count - 1])
+                state.withLock { s in
+                    if let content = s.simulatedLsOutputs[src] {
+                        s.simulatedLsOutputs[dest] = content
+                    }
+                    if let fileData = s.mockStorageFiles[src] {
+                        s.mockStorageFiles[dest] = fileData
                     }
                 }
                 return ADBCommandResult(exitCode: 0, stdout: "", stderr: "")
@@ -197,14 +229,25 @@ public final class MockADBCommandRunner: ADBCommandRunner, @unchecked Sendable {
                 let localPath = arguments[3]
                 let remotePath = arguments[4]
                 
-                if let localData = FileManager.default.contents(atPath: localPath) {
-                    state.withLock { s in
-                        s.mockStorageFiles[remotePath] = localData
+                var isDirectory: ObjCBool = false
+                if FileManager.default.fileExists(atPath: localPath, isDirectory: &isDirectory) {
+                    if isDirectory.boolValue {
+                        state.withLock { s in
+                            s.simulatedLsOutputs[remotePath] = ""
+                            let parent = (remotePath as NSString).deletingLastPathComponent
+                            let name = (remotePath as NSString).lastPathComponent
+                            let cur = s.simulatedLsOutputs[parent] ?? ""
+                            s.simulatedLsOutputs[parent] = cur + "\ndrwxrwx--x 2 root sdcard_rw 4096 2026-10-31 00:00 \(name)/"
+                        }
+                        return ADBCommandResult(exitCode: 0, stdout: "\(localPath): 1 directory pushed, 0 skipped. 30.5 MB/s", stderr: "")
+                    } else if let localData = FileManager.default.contents(atPath: localPath) {
+                        state.withLock { s in
+                            s.mockStorageFiles[remotePath] = localData
+                        }
+                        return ADBCommandResult(exitCode: 0, stdout: "\(localPath): 1 file pushed, 0 skipped. 30.5 MB/s (\(localData.count) bytes in 0.001s)", stderr: "")
                     }
-                    return ADBCommandResult(exitCode: 0, stdout: "\(localPath): 1 file pushed, 0 skipped. 30.5 MB/s (\(localData.count) bytes in 0.001s)", stderr: "")
-                } else {
-                    return ADBCommandResult(exitCode: 1, stdout: "", stderr: "adb: error: cannot stat '\(localPath)': No such file or directory")
                 }
+                return ADBCommandResult(exitCode: 1, stdout: "", stderr: "adb: error: cannot stat '\(localPath)': No such file or directory")
             }
             
             // `adb -s <serial> pull <remote> <local>`
@@ -224,9 +267,17 @@ public final class MockADBCommandRunner: ADBCommandRunner, @unchecked Sendable {
                 if let data = remoteData {
                     try? data.write(to: URL(fileURLWithPath: localPath))
                     return ADBCommandResult(exitCode: 0, stdout: "\(remotePath): 1 file pulled, 0 skipped. 35.2 MB/s (\(data.count) bytes in 0.001s)", stderr: "")
-                } else {
-                    return ADBCommandResult(exitCode: 1, stdout: "", stderr: "adb: error: failed to stat remote object '\(remotePath)': No such file or directory")
                 }
+                
+                let isDir = state.withLock { s in
+                    s.simulatedLsOutputs[remotePath] != nil || remotePath == "/sdcard" || remotePath == "/sdcard/Download" || remotePath.hasSuffix("/")
+                }
+                if isDir {
+                    try? FileManager.default.createDirectory(atPath: localPath, withIntermediateDirectories: true)
+                    return ADBCommandResult(exitCode: 0, stdout: "\(remotePath): 1 directory pulled. 35.2 MB/s", stderr: "")
+                }
+                
+                return ADBCommandResult(exitCode: 1, stdout: "", stderr: "adb: error: failed to stat remote object '\(remotePath)': No such file or directory")
             }
         }
         
