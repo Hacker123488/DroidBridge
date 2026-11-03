@@ -20,6 +20,10 @@ let package = Package(
         .executable(
             name: "DroidBridgeTestRunner",
             targets: ["DroidBridgeTestRunner"]
+        ),
+        .executable(
+            name: "MTPVerify",
+            targets: ["MTPVerify"]
         )
     ],
     targets: [
@@ -36,6 +40,10 @@ let package = Package(
             name: "DroidBridgeTestRunner",
             dependencies: ["DroidBridgeCore"],
             path: "tests/DroidBridgeTestRunner"
+        ),
+        .executableTarget(
+            name: "MTPVerify",
+            path: "src/MTPVerify"
         )
     ]
 )
